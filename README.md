@@ -7,15 +7,18 @@ Tools for the Franka FR3 demonstration data in `Dataset/*.h5`.
 Each `.h5` file holds episodes `episode_0000000, episode_0000001, ...`, recorded at about 10 Hz.
 All streams within an episode share the same timestamps.
 
+Task: pick and place a red cylinder on a white table, recorded with one fixed camera.
+Each episode starts where the previous one left the object.
+
 | Key | Shape | Meaning |
 |---|---|---|
 | `cams/<serial>/rgb` | (T, 376, 672, 3) uint8 | camera images (gzip-compressed) |
 | `fr3/q`, `fr3/dq` | (T, 7) | joint angles [rad], joint velocities [rad/s] |
 | `fr3/x_ee` | (T, 7) | end-effector position [m] + orientation quaternion |
 | `fr3/v_ee` | (T, 6) | end-effector velocity: linear [m/s] + angular [rad/s] |
-| `fr3/gripper` | (T,) | gripper state, -1 to 1 |
+| `fr3/gripper` | (T,) | gripper state: -1 open, +1 closed; ramps over about 1–1.5 s while moving |
 | `action/x_ee_des` | (T, 7) | target end-effector pose (the action) |
-| `action/gripper` | (T,) | gripper command, -1 to 1 |
+| `action/gripper` | (T,) | gripper command: -1 open, +1 close (always exactly ±1) |
 | `timestamps` | (T,) | seconds since the start of the episode |
 
 ## Scripts
