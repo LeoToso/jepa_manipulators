@@ -244,7 +244,11 @@ def inspect_pickle(path, samples):
 
 def inspect_torch(path, samples):
     import torch
-    describe(torch.load(path, map_location="cpu", weights_only=False), samples=samples)
+    try:
+        obj = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:  # torch < 1.13 has no weights_only argument
+        obj = torch.load(path, map_location="cpu")
+    describe(obj, samples=samples)
 
 
 def inspect_json(path, samples):
