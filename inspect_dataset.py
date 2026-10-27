@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import pickle
+import signal
 import sys
 from collections import Counter, defaultdict
 
@@ -467,6 +468,8 @@ def main():
     parser.add_argument("--files-per-type", type=int, default=2,
                         help="in a directory, how many files of each type to open (default 2)")
     args = parser.parse_args()
+    if hasattr(signal, "SIGPIPE"):  # exit quietly when piped into `head`
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     if not os.path.exists(args.path):
         sys.exit(f"path not found: {args.path}")
