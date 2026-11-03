@@ -32,6 +32,9 @@ python view_episode.py Dataset/20261026_143452.h5 --list
 python view_episode.py Dataset/20261026_143452.h5 --episode 0
 python view_episode.py Dataset/20261026_143452.h5 --episode all --png
 
+# 10 full-resolution frames from one episode (first, last, evenly spaced between)
+python extract_frames.py Dataset/20261026_150630.h5 --episode 0 --num 10
+
 # training data
 python franka_dataset.py check-quat Dataset                      # find the quaternion order
 python franka_dataset.py build-cache Dataset --out cache_224 --size 224 224

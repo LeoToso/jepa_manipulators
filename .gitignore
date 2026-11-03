@@ -3,3 +3,4 @@ __pycache__/
 Dataset/
 cache*/
 episode_views/
+frames/
