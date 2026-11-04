@@ -1,6 +1,6 @@
 __pycache__/
 *.pyc
-Dataset/
+Dataset*/
 cache*/
 episode_views/
 frames/
