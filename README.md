@@ -64,6 +64,10 @@ They differ only in the objective:
   - Metric loss (their Eq. 6): `(‖φ(s_i,g_i) − φ(s_j,g_j)‖₁ − |r_i − r_j| − γ‖φ̄(s'_i,g_i) − φ̄(s'_j,g_j)‖₂)²`,
     with j a random permutation of the batch, the recorded next state s', and γ = 0.99.
   - Analogy loss (Eq. 7): `‖(φ̄(s,g) − φ̄(g,g)) − (z_g − z_s)‖²`, plus their reward decoder (App. D.5).
+  - Norms are averaged per dimension (mean |·|, RMS). With the paper's raw sums, the reward fixes
+    distances of order 1 over all 192 dimensions, and the joint optimum with the scale-dependent
+    prediction MSE is to shrink z until prediction is free. In tests the latent std fell to 0.004 and the
+    predictor became useless. `gcb_distance: paper` restores the raw sums.
   - **Reward-free:** the goal g is a later frame of the same episode (offset k ~ Geometric(0.3),
     up to 30 latent steps) and r = 1 iff s' = g. No task reward is used anywhere.
   - The metric gradients flow into the encoder, so GCB acts as a regularizer on the JEPA latent.

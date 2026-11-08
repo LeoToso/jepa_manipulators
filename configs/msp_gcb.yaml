@@ -10,4 +10,5 @@ training:
   lambda_gcb_reward: 1.0    # reward decoder, App. D.5
   gcb_gamma: 0.99
   gcb_reward_scale: 1.0
+  gcb_distance: normalized   # per-dimension norms; 'paper' = raw sums (shrinks the latent, see losses.py)
   gcb_phi_grad_to_encoder: true   # metric gradients shape the JEPA encoder (regularizer)
