@@ -161,24 +161,30 @@ class EndpointInverseModel(nn.Module):
 
 
 class GCBHeads(nn.Module):
-    """Goal-conditioned bisimulation heads on top of the JEPA latent psi(s) = z.
+    """Goal-conditioned bisimulation heads (Hansen-Estruch et al., ICML 2022, Fig. 3).
 
-    phi(s, g): paired state-goal embedding, an MLP of [z_s, z_g, z_g - z_s] with the
-               same dimension as z so that the analogy psi(g) - psi(s) = phi(s, g)
-               (Hansen-Estruch et al., Eq. 5/7) is well defined.
+    phi(s, g): paired state-goal embedding with its own image encoder E_phi (same ViT
+               architecture as the JEPA encoder) and an MLP of [f_s, f_g, f_g - f_s]. As in
+               the paper, phi does not depend on psi: it is trained only by the metric and
+               reward losses, and psi = z (the JEPA latent) is shaped by the analogy loss
+               psi(g) - psi(s) = phi(s, g) - phi(g, g) (their Eq. 7).
+               (An MLP on top of z instead creates a feedback loop: the analogy loss pulls z
+               towards targets computed from z, which diverged even on a single batch.)
     reward:    R(phi(s, g), phi(s', g)) -> probability that s' is the goal (their D.5).
     """
 
-    def __init__(self, latent_dim=192, hidden_dim=512):
+    def __init__(self, encoder_kwargs, latent_dim=192, hidden_dim=512):
         super().__init__()
-        self.phi = nn.Sequential(nn.Linear(3 * latent_dim, hidden_dim), nn.LayerNorm(hidden_dim),
+        self.encoder = PatchViTEncoder(**encoder_kwargs)
+        f = encoder_kwargs['latent_dim']
+        self.phi = nn.Sequential(nn.Linear(3 * f, hidden_dim), nn.LayerNorm(hidden_dim),
                                  nn.GELU(), nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
                                  nn.Linear(hidden_dim, latent_dim))
         self.reward = nn.Sequential(nn.Linear(2 * latent_dim, hidden_dim // 2), nn.GELU(),
                                     nn.Linear(hidden_dim // 2, 1))
 
-    def pair(self, z_s, z_g):
-        return self.phi(torch.cat([z_s, z_g, z_g - z_s], dim=-1))
+    def pair(self, f_s, f_g):
+        return self.phi(torch.cat([f_s, f_g, f_g - f_s], dim=-1))
 
 
 class WorldModel(nn.Module):
@@ -190,10 +196,11 @@ class WorldModel(nn.Module):
         d = int(cfg.get('latent_dim', 192))
         self.latent_dim, self.action_dim = d, int(action_dim)
         self.use_frame_diff = bool(cfg.get('use_frame_diff', True))
-        self.encoder = PatchViTEncoder(
+        enc_kwargs = dict(
             image_size=int(cfg.get('image_size', 128)), patch_size=int(cfg.get('patch_size', 8)),
             in_channels=9 if self.use_frame_diff else 3, embed_dim=int(cfg.get('vit_embed_dim', 192)),
             depth=int(cfg.get('vit_depth', 4)), heads=int(cfg.get('vit_heads', 3)), latent_dim=d)
+        self.encoder = PatchViTEncoder(**enc_kwargs)
         self.action_encoder = ActionEmbedder(self.action_dim, d)
         self.predictor = ARPredictor(
             latent_dim=d, hidden_dim=int(cfg.get('predictor_hidden_dim', 192)),
@@ -205,20 +212,24 @@ class WorldModel(nn.Module):
             d, self.action_dim, int(cfg.get('inverse_hidden_dim', 256)),
             int(cfg.get('endpoint_inverse_horizon', 3)))
             if cfg.get('use_endpoint_inverse', False) else None)
-        self.gcb = (GCBHeads(d, int(cfg.get('gcb_hidden_dim', 512)))
+        self.gcb = (GCBHeads(dict(enc_kwargs, depth=int(cfg.get('gcb_vit_depth', enc_kwargs['depth']))),
+                             d, int(cfg.get('gcb_hidden_dim', 512)))
                     if cfg.get('use_gcb', False) else None)
 
     @staticmethod
     def to_float(x):
         return x.float().div(255.) if x.dtype == torch.uint8 else x.float()
 
-    def encode(self, obs, prev_obs=None, return_tokens=False):
-        """obs, prev_obs: (B, 3, S, S) uint8 or float in [0, 1]."""
+    def encoder_input(self, obs, prev_obs=None):
         obs = self.to_float(obs)
         if self.use_frame_diff:
             prev = obs if prev_obs is None else self.to_float(prev_obs)
             obs = torch.cat((prev, obs, obs - prev), dim=1)
-        return self.encoder(obs, return_tokens=return_tokens)
+        return obs
+
+    def encode(self, obs, prev_obs=None, return_tokens=False):
+        """obs, prev_obs: (B, 3, S, S) uint8 or float in [0, 1]."""
+        return self.encoder(self.encoder_input(obs, prev_obs), return_tokens=return_tokens)
 
     def encode_seq(self, obs, prev_obs=None):
         """(B, T, 3, S, S) -> (B, T, d)."""

@@ -22,9 +22,9 @@
    quaternions are stored w, x, y, z (verified on this robot's logs).
 
    Optionally a hindsight goal is returned: the frame k latent steps after the
-   window start, k ~ Geometric(goal_geom_p) truncated to the episode. It is used
-   by the goal-conditioned bisimulation loss (reward 1 iff k == 1, i.e. the next
-   state is the goal) and by goal-conditioned evaluations.
+   window start, k ~ Geometric(goal_geom_p) truncated to the episode, with the
+   measured state of the next frame and of the goal. It is used by the
+   goal-conditioned bisimulation loss.
 """
 from __future__ import annotations
 
@@ -282,7 +282,7 @@ class WindowDataset(Dataset):
         actions    float (H, 7*fs)       normalized action chunks
         frame      int   (H+1,)          global frame index of every step (labels/probes)
         task, episode  int
-        goal_obs, goal_prev_obs, goal_offset   (if return_goal) hindsight goal
+        goal_obs, goal_prev_obs, goal_offset, next_state, goal_state   (if return_goal)
     """
 
     def __init__(self, cache, split, horizon=3, frame_skip=2, action_mode='delta_next',
@@ -313,6 +313,13 @@ class WindowDataset(Dataset):
     def __len__(self):
         return len(self.index)
 
+    def _state(self, frame):
+        """Measured [EE position (3), quaternion w-x-y-z (4), gripper (1)] of one frame."""
+        low = self.cache.low
+        q = to_wxyz(low['x_ee'][frame, 3:7].astype(np.float64), self.cache.quat_order)
+        return torch.from_numpy(np.concatenate([low['x_ee'][frame, :3], q, low['gripper'][frame, :1]])
+                                .astype(np.float32))
+
     def _frames(self, idx):
         return torch.from_numpy(np.ascontiguousarray(self.cache.images[idx])).permute(0, 3, 1, 2)
 
@@ -339,6 +346,8 @@ class WindowDataset(Dataset):
             out['goal_prev_obs'] = self._frames(np.array([g - self.fs]))[0]
             out['goal_offset'] = k
             out['goal_frame'] = g
+            out['next_state'] = self._state(frames[1])
+            out['goal_state'] = self._state(g)
         return out
 
 

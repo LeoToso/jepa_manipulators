@@ -1,5 +1,5 @@
 # MSP+GCB: multi-step prediction + goal-conditioned bisimulation (Hansen-Estruch et al. 2022)
-# with a reward-free hindsight reward r = 1[s' = g] (goal = later frame of the same episode).
+# with a reward-free goal-reaching reward (goal = later frame of the same episode).
 inherit: base.yaml
 model:
   use_gcb: true
@@ -9,6 +9,9 @@ training:
   lambda_gcb_psi: 1.0       # analogy loss psi(g) - psi(s) = phi(s,g) - phi(g,g), Eq. 7
   lambda_gcb_reward: 1.0    # reward decoder, App. D.5
   gcb_gamma: 0.99
+  gcb_reward: state_distance     # -(EE position / rotation / gripper distance of s' to g);
+                                 # 'indicator' = paper's 1[s'=g] (degenerate here, see losses.py),
+                                 # 'latent_distance' = -|zbar' - zbar_g| (self-supervised)
+  gcb_state_scales: [0.05, 0.5, 2.0]   # metres, radians, gripper range
   gcb_reward_scale: 1.0
   gcb_distance: normalized   # per-dimension norms; 'paper' = raw sums (shrinks the latent, see losses.py)
-  gcb_phi_grad_to_encoder: true   # metric gradients shape the JEPA encoder (regularizer)

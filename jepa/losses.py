@@ -18,10 +18,10 @@ Anti-collapse / structure terms:
              L_phi = ( ||phi(s_i,g_i) - phi(s_j,g_j)||_1 - |r_i - r_j|
                        - gamma ||phibar(s'_i,g_i) - phibar(s'_j,g_j)||_2 )^2     (Eq. 6)
              L_psi = || (phibar(s,g) - phibar(g,g)) - (psi(g) - psi(s)) ||_2^2   (Eq. 7)
-             (norms averaged per dimension by default, see gcb_losses)
-             L_rew = BCE( R(phi(s,g), phi(s',g)), r )                             (App. D.5)
-             with psi(s) = z (the JEPA latent), j a random permutation of the
-             batch, s' the recorded next state and a reward-free hindsight reward:
+             (default: per-dimension mean |.| on both sides, see gcb_losses)
+             L_rew = MSE( R(phi(s,g), phi(s',g)), r )  (BCE for the 0/1 indicator)  (App. D.5)
+             with psi(s) = z (the JEPA latent), phi with its own image encoder (as in
+             the paper; phi never depends on psi), j a random permutation of the batch, s' the recorded next state and a reward-free hindsight reward:
              g is a later frame of the same episode and r = 1 iff s' = g.
 """
 from __future__ import annotations
@@ -68,40 +68,73 @@ def prediction_loss(model, z, actions, mode):
     return F.mse_loss(pred, z[:, 1:]), pred
 
 
-def gcb_losses(model, z_s, z_next, z_goal, goal_offset, gamma=0.99, reward_scale=1.0,
-               phi_grad_to_encoder=True, distance='normalized'):
-    """distance='paper': L1 sum / L2 norm / squared-L2 sum exactly as in Eq. 6-7.
-    distance='normalized' (default): the same equations with per-dimension averages
-    (mean |.|, RMS, mean squares). The metric unit then matches a unit-scale latent for
-    any latent_dim; with the raw sums the reward fixes distances of order 1 over all
-    dimensions, and the joint optimum with the scale-dependent prediction MSE is to
-    shrink z until prediction is free (observed: latent std ~0.004, useless predictor)."""
+def gcb_reward(kind, goal_offset, next_state=None, goal_state=None, z_next=None, z_goal=None,
+               state_scales=(0.05, 0.5, 2.0)):
+    """Reward-free goal-reaching reward r(s, a, g), evaluated at the next state s'.
+
+    indicator       1[s' = g] (the paper's sparse reward). With hindsight goals on logged,
+                    deterministic trajectories the bisimulation fixed point then depends only
+                    on the steps-to-goal k: d = (gamma^(k_i-1) + gamma^(k_j-1)) 1[k_i != k_j],
+                    so it cannot tell tasks, objects or motions apart.
+    state_distance  -(|p' - p_g| / s_p + angle(q', q_g) / s_q + |grip' - grip_g| / s_g) / 3 from
+                    measured EE pose and gripper (no task reward; dense; rotation enters directly).
+    latent_distance -mean |zbar' - zbar_g| with the (stop-gradient) JEPA latent: purely
+                    self-supervised but self-referential.
+    """
+    if kind == 'indicator':
+        return (goal_offset == 1).float()
+    if kind == 'state_distance':
+        dpos = (next_state[:, :3] - goal_state[:, :3]).norm(dim=-1)
+        dot = (next_state[:, 3:7] * goal_state[:, 3:7]).sum(-1).abs().clamp(max=1.0)
+        drot = 2 * torch.acos(dot)
+        dgrip = (next_state[:, 7] - goal_state[:, 7]).abs()
+        sp, sq, sg = state_scales
+        return -(dpos / sp + drot / sq + dgrip / sg) / 3
+    if kind == 'latent_distance':
+        return -(z_next.detach() - z_goal.detach()).abs().mean(-1)
+    raise ValueError(f'gcb_reward must be indicator, state_distance or latent_distance, got {kind!r}')
+
+
+def gcb_losses(model, x_s, x_next, x_goal, z_s, z_goal, r, binary_reward, gamma=0.99,
+               distance='normalized'):
+    """x_*: encoder inputs of s, s', g (same pass, so s' = g gives identical features);
+    z_s, z_goal: JEPA latents psi(s), psi(g); r: reward of each sample (see gcb_reward).
+
+    distance='paper': exactly Eq. 6-7: L1 sum for the current pair, L2 norm for the
+        bootstrapped next pair, squared-L2 sum in the analogy loss. Since L1 >= L2 the
+        update contracts, but the reward fixes distances of order 1 summed over all
+        dimensions; with the scale-dependent prediction MSE the joint optimum is to shrink
+        z until prediction is free (observed: latent std 0.004, useless predictor).
+    distance='normalized' (default): per-dimension mean |.| on BOTH sides and a mean
+        square in the analogy loss. Using the same norm on both sides makes the update a
+        gamma-contraction (unique fixed point, their Prop. 6.1); per-dimension averaging
+        makes the metric unit match a unit-scale latent for any latent_dim. (Mixing
+        mean |.| with RMS is NOT a contraction, mean|x| <= RMS(x), and diverged.)"""
     heads = model.gcb
-    d = z_s.shape[-1]
     if distance == 'paper':
         l1 = lambda x: x.abs().sum(-1)
         l2 = lambda x: x.norm(dim=-1)
         sq = lambda x: (x ** 2).sum(-1)
     elif distance == 'normalized':
         l1 = lambda x: x.abs().mean(-1)
-        l2 = lambda x: x.norm(dim=-1) / d ** 0.5
+        l2 = l1
         sq = lambda x: (x ** 2).mean(-1)
     else:
         raise ValueError(f'gcb_distance must be paper or normalized, got {distance!r}')
-    r = (goal_offset == 1).float() * reward_scale
-    zs, zg = (z_s, z_goal) if phi_grad_to_encoder else (z_s.detach(), z_goal.detach())
-    phi = heads.pair(zs, zg)
-    perm = torch.randperm(phi.shape[0], device=phi.device)
+    b = x_s.shape[0]
+    f_s, f_n, f_g = heads.encoder(torch.cat([x_s, x_next, x_goal])).split(b)
+    phi = heads.pair(f_s, f_g)
+    phi_next = heads.pair(f_n, f_g)
+    perm = torch.randperm(b, device=phi.device)
     dist = l1(phi - phi[perm])
     with torch.no_grad():
-        phi_next = heads.pair(z_next.detach(), z_goal.detach())
         target = (r - r[perm]).abs() + gamma * l2(phi_next - phi_next[perm])
-        anchor = heads.pair(z_s.detach(), z_goal.detach()) - heads.pair(z_goal.detach(), z_goal.detach())
+        anchor = phi - heads.pair(f_g, f_g)
     l_phi = ((dist - target) ** 2).mean()
     l_psi = sq(anchor - (z_goal - z_s)).mean()
-    logits = heads.reward(torch.cat([phi, heads.pair(z_next if phi_grad_to_encoder else z_next.detach(), zg)],
-                                    dim=-1))[:, 0]
-    l_rew = F.binary_cross_entropy_with_logits(logits, (goal_offset == 1).float())
+    out = heads.reward(torch.cat([phi, phi_next], dim=-1))[:, 0]
+    l_rew = (F.binary_cross_entropy_with_logits(out, (r > 0).float()) if binary_reward
+             else F.mse_loss(out, r))
     return l_phi, l_psi, l_rew
 
 
@@ -150,9 +183,16 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
 
     if use_gcb:
         k = batch['goal_offset'].to(device)
+        x_goal = model.encoder_input(batch['goal_obs'].to(device, non_blocking=True),
+                                     batch['goal_prev_obs'].to(device, non_blocking=True))
+        kind = str(tc.get('gcb_reward', 'state_distance'))
+        r = gcb_reward(kind, k, batch.get('next_state', torch.zeros(1)).to(device),
+                       batch.get('goal_state', torch.zeros(1)).to(device), z[:, 1], z_goal,
+                       tuple(tc.get('gcb_state_scales', (0.05, 0.5, 2.0))))
+        r = r * float(tc.get('gcb_reward_scale', 1.0))
         l_phi, l_psi, l_rew = gcb_losses(
-            model, z[:, 0], z[:, 1], z_goal, k, float(tc.get('gcb_gamma', 0.99)),
-            float(tc.get('gcb_reward_scale', 1.0)), bool(tc.get('gcb_phi_grad_to_encoder', True)),
+            model, model.encoder_input(obs[:, 0], prev[:, 0]), model.encoder_input(obs[:, 1], prev[:, 1]),
+            x_goal, z[:, 0], z_goal, r, kind == 'indicator', float(tc.get('gcb_gamma', 0.99)),
             str(tc.get('gcb_distance', 'normalized')))
         total = (total + float(tc.get('lambda_gcb_phi', 1.0)) * l_phi
                  + float(tc.get('lambda_gcb_psi', 1.0)) * l_psi

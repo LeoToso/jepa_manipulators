@@ -60,17 +60,29 @@ They differ only in the objective:
   `sigreg_impl: jepa_control` reproduces the JEPA_control variant.
 - **EP-IDM:** predicts the H action chunks from `(z_t, z_{t+H})` only.
 - **GCB** ([Hansen-Estruch et al. 2022](https://arxiv.org/abs/2204.13060)):
-  - `ψ(s) = z` is the JEPA latent, and `φ(s, g)` is an MLP head on `[z_s, z_g, z_g − z_s]`.
-  - Metric loss (their Eq. 6): `(‖φ(s_i,g_i) − φ(s_j,g_j)‖₁ − |r_i − r_j| − γ‖φ̄(s'_i,g_i) − φ̄(s'_j,g_j)‖₂)²`,
+  - `ψ(s) = z` is the JEPA latent. As in their Fig. 3, `φ(s, g)` has its own image encoder (same
+    ViT) and an MLP on `[f_s, f_g, f_g − f_s]`; φ never depends on ψ.
+  - Metric loss (their Eq. 6): `(d(φ(s_i,g_i), φ(s_j,g_j)) − |r_i − r_j| − γ d(φ̄(s'_i,g_i), φ̄(s'_j,g_j)))²`,
     with j a random permutation of the batch, the recorded next state s', and γ = 0.99.
-  - Analogy loss (Eq. 7): `‖(φ̄(s,g) − φ̄(g,g)) − (z_g − z_s)‖²`, plus their reward decoder (App. D.5).
-  - Norms are averaged per dimension (mean |·|, RMS). With the paper's raw sums, the reward fixes
-    distances of order 1 over all 192 dimensions, and the joint optimum with the scale-dependent
-    prediction MSE is to shrink z until prediction is free. In tests the latent std fell to 0.004 and the
-    predictor became useless. `gcb_distance: paper` restores the raw sums.
-  - **Reward-free:** the goal g is a later frame of the same episode (offset k ~ Geometric(0.3),
-    up to 30 latent steps) and r = 1 iff s' = g. No task reward is used anywhere.
-  - The metric gradients flow into the encoder, so GCB acts as a regularizer on the JEPA latent.
+  - Analogy loss (Eq. 7): `‖(φ̄(s,g) − φ̄(g,g)) − (z_g − z_s)‖²`. This is the only GCB term that
+    shapes the JEPA latent. The reward decoder (App. D.5) is also included.
+  - **Hindsight goals:** g is a later frame of the same episode (offset k ~ Geometric(0.3), up
+    to 30 latent steps), and s, s' and g go through each encoder in one pass.
+  - **Reward-free reward** (`gcb_reward`, no task reward is used anywhere):
+    - `state_distance` (default): r = −(EE position / 5 cm + EE rotation angle / 0.5 rad +
+      gripper difference / 2) / 3, measured between s' and g.
+    - `latent_distance`: r = −mean|z̄' − z̄_g|, purely self-supervised.
+    - `indicator`: the paper's r = 1[s' = g]. With hindsight goals on logged trajectories its
+      bisimulation fixed point depends only on the steps-to-goal k:
+      `d = (γ^(k_i−1) + γ^(k_j−1))·1[k_i ≠ k_j]`. It therefore cannot separate tasks, objects or
+      motions, and in tests the metric stayed at its trivial constant solution.
+  - **Distance:** d is the per-dimension mean |·| on both sides of Eq. 6 (`gcb_distance: normalized`).
+    - Using the same norm on both sides makes the update a γ-contraction (their Prop. 6.1).
+      Mixing mean |·| with RMS is not one, since mean|x| ≤ RMS(x), and it diverged.
+    - Per-dimension averaging makes the metric's unit match a unit-scale latent. With the
+      paper's raw sums (`gcb_distance: paper`), the reward fixes distances of order 1 summed over
+      all 192 dimensions; the joint optimum with the prediction MSE is then to shrink z until
+      prediction is free. In tests the latent std fell to 0.004.
 - **BatchNorm:** running statistics are recomputed at the end of every epoch ("precise BN").
   Without this, the eval-mode encoder drifts far from the train-mode one (the pre-BN mean
   is invisible to every loss), and validation, probes and planning break.
