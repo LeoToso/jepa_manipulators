@@ -7,10 +7,11 @@ training:
   lambda_gcb_phi: 1.0
   lambda_gcb_psi: 1.0
   lambda_gcb_reward: 1.0
-  gcb_gamma: 0.99
+  gcb_gamma: 0.9            # bisimulation horizon ~10 latent steps (2 s); 0.99 (paper) learned the
+                            # metric too slowly here and the latent shrank (see README)
   gcb_reward: state_distance     # -(EE position / rotation / gripper distance of s' to g);
                                  # 'indicator' = paper's 1[s'=g] (degenerate here, see losses.py),
                                  # 'latent_distance' = -|zbar' - zbar_g| (self-supervised)
   gcb_state_scales: [0.05, 0.5, 2.0]   # metres, radians, gripper range
-  gcb_reward_scale: 1.0
+  gcb_reward_scale: 10.0     # sets the metric unit, hence the latent scale (1.0: latent std ~0.04)
   gcb_distance: normalized   # per-dimension norms; 'paper' = raw sums (shrinks the latent, see losses.py)

@@ -63,7 +63,7 @@ They differ only in the objective:
   - `ψ(s) = z` is the JEPA latent. As in their Fig. 3, `φ(s, g)` has its own image encoder (same
     ViT) and an MLP on `[f_s, f_g, f_g − f_s]`; φ never depends on ψ.
   - Metric loss (their Eq. 6): `(d(φ(s_i,g_i), φ(s_j,g_j)) − (1−γ)|r_i − r_j| − γ d(φ̄(s'_i,g_i), φ̄(s'_j,g_j)))²`,
-    with j a random permutation of the batch, the recorded next state s', and γ = 0.99.
+    with j a random permutation of the batch and the recorded next state s'.
     The (1−γ) factor comes from their Prop. 6.1. Without it, since consecutive frames have
     nearly equal φ, the fixed point is about |Δr|/(1−γ) = 100× the reward scale. In tests that
     slowly inflated the metric, and the analogy loss inflated the latent with it.
@@ -86,6 +86,15 @@ They differ only in the objective:
       paper's raw sums (`gcb_distance: paper`), the reward fixes distances of order 1 summed over
       all 192 dimensions; the joint optimum with the prediction MSE is then to shrink z until
       prediction is free. In tests the latent std fell to 0.004.
+  - **Defaults: γ = 0.9, reward scale 10.** Without SIGReg, only the GCB anchor holds the latent's
+    scale against the prediction MSE, which always prefers a smaller latent. In 10-epoch tests:
+    - γ = 0.99 (paper): the metric bootstraps too slowly and the latent shrank (std 0.02,
+      relative rollout error 0.59).
+    - γ = 0.9, reward scale 1: latent std 0.036, relative rollout error 0.40.
+    - γ = 0.9, reward scale 10: latent std 0.17 and growing, relative rollout error 0.30 and falling.
+
+    GCB is the experimental arm. Watch `latent_std` and `rel_err_multi_step` in the training log,
+    and tune `gcb_gamma`, `gcb_reward_scale` and `lambda_gcb_psi` with `--set`.
 - **BatchNorm:** running statistics are recomputed at the end of every epoch ("precise BN").
   Without this, the eval-mode encoder drifts far from the train-mode one (the pre-BN mean
   is invisible to every loss), and validation, probes and planning break.
