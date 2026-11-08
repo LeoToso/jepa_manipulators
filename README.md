@@ -1,55 +1,141 @@
 # jepa_manipulators
 
-Tools for the Franka FR3 demonstration data in `Dataset/*.h5`.
+JEPA world models for Franka FR3 manipulation data, and tools to inspect what their latent
+spaces encode. The question behind the code: when one JEPA is trained across semantically
+different task families (pick-and-place vs. rotate), which task-relevant structure does the
+latent keep, does it favour one family's physics over the other's, and how should the
+latent be organized to transfer to new or composed tasks?
 
-## Data layout
+## 1. The dataset
 
-Each `.h5` file holds episodes `episode_0000000, episode_0000001, ...`, recorded at about 10 Hz.
-All streams within an episode share the same timestamps.
+`dataset_franka_arm.h5` merges all recordings: 300 episodes, 50 per task.
 
-Task: pick and place a red cylinder on a white table, recorded with one fixed camera.
-Each episode starts where the previous one left the object.
+```
+@tasks = [pick_and_place_banana, pick_and_place_chips, pick_and_place_orange,
+          rotate_banana, rotate_chips, rotate_orange]
+@episodes_per_task = 50
+episode_0000000 ... episode_0000299   (task = index // 50 unless the episode has a task attribute)
+```
+
+Each episode, recorded at about 10 Hz, with all streams sharing the same timestamps:
 
 | Key | Shape | Meaning |
 |---|---|---|
 | `cams/<serial>/rgb` | (T, 376, 672, 3) uint8 | camera images (gzip-compressed) |
 | `fr3/q`, `fr3/dq` | (T, 7) | joint angles [rad], joint velocities [rad/s] |
-| `fr3/x_ee` | (T, 7) | end-effector position [m] + orientation quaternion |
-| `fr3/v_ee` | (T, 6) | end-effector velocity: linear [m/s] + angular [rad/s] |
+| `fr3/x_ee` | (T, 7) | end-effector position [m] + quaternion (w, x, y, z) |
+| `fr3/v_ee` | (T, 6) | end-effector velocity: linear [m/s] + angular [rad/s], base frame |
 | `fr3/gripper` | (T,) | gripper state: -1 open, +1 closed; ramps over about 1–1.5 s while moving |
-| `action/x_ee_des` | (T, 7) | target end-effector pose (the action) |
+| `action/x_ee_des` | (T, 7) | target end-effector pose |
 | `action/gripper` | (T,) | gripper command: -1 open, +1 close (always exactly ±1) |
 | `timestamps` | (T,) | seconds since the start of the episode |
 
-## Scripts
+## 2. Models
+
+All six models share the encoder, predictor, data and optimizer (`configs/base.yaml`).
+They differ only in the objective:
+
+| Config | Prediction | Second term |
+|---|---|---|
+| `1sp_sigreg` | one-step (teacher-forced) | SIGReg |
+| `msp_sigreg` | multi-step (autoregressive, H = 3) | SIGReg |
+| `1sp_epidm` | one-step | endpoint inverse dynamics (EP-IDM) |
+| `msp_epidm` | multi-step | EP-IDM |
+| `1sp_gcb` | one-step | goal-conditioned bisimulation (reward-free) |
+| `msp_gcb` | multi-step | goal-conditioned bisimulation (reward-free) |
+
+- **Architecture** (from [JEPA_control](https://github.com/LeoToso/JEPA_control)):
+  - Encoder: ViT-Tiny (128×128 input, patch 8, depth 4, 192-d). Input is
+    `[o_{t-1}, o_t, o_t - o_{t-1}]`, so velocity is observable. Its CLS token goes to an MLP
+    projector with BatchNorm, giving a 192-d `z_t`. The encoder sees pixels only: no
+    proprioception, so the probes measure what the encoder extracts from images.
+  - Predictor: a 6-layer AdaLN-zero transformer, used as a Markov map `z_{t+1} = f(z_t, a_t)`.
+    1SP and MSP train exactly the function that planning uses.
+- **Actions:** one latent step is 2 recorded steps (5 Hz). Its action is the chunk of 2
+  per-step actions `[dpos (3), drot (3), gripper command (1)]` (14-d), where dpos and drot
+  are the achieved end-effector motion in the base frame. To execute a planned action,
+  command `x_ee_des = x_ee ⊕ a`.
+- **SIGReg:** the official LeJEPA form (Epps–Pulley statistic, trapezoid rule on [0, 3],
+  Gaussian weight, multiplied by N, 256 random directions per step) with λ = 0.05.
+  `sigreg_impl: jepa_control` reproduces the JEPA_control variant.
+- **EP-IDM:** predicts the H action chunks from `(z_t, z_{t+H})` only.
+- **GCB** ([Hansen-Estruch et al. 2022](https://arxiv.org/abs/2204.13060)):
+  - `ψ(s) = z` is the JEPA latent, and `φ(s, g)` is an MLP head on `[z_s, z_g, z_g − z_s]`.
+  - Metric loss (their Eq. 6): `(‖φ(s_i,g_i) − φ(s_j,g_j)‖₁ − |r_i − r_j| − γ‖φ̄(s'_i,g_i) − φ̄(s'_j,g_j)‖₂)²`,
+    with j a random permutation of the batch, the recorded next state s', and γ = 0.99.
+  - Analogy loss (Eq. 7): `‖(φ̄(s,g) − φ̄(g,g)) − (z_g − z_s)‖²`, plus their reward decoder (App. D.5).
+  - **Reward-free:** the goal g is a later frame of the same episode (offset k ~ Geometric(0.3),
+    up to 30 latent steps) and r = 1 iff s' = g. No task reward is used anywhere.
+  - The metric gradients flow into the encoder, so GCB acts as a regularizer on the JEPA latent.
+- **BatchNorm:** running statistics are recomputed at the end of every epoch ("precise BN").
+  Without this, the eval-mode encoder drifts far from the train-mode one (the pre-BN mean
+  is invisible to every loss), and validation, probes and planning break.
+
+## 3. Commands
 
 ```bash
-# what is in a dataset (any format)
-python inspect_dataset.py Dataset
+pip install -r requirements.txt
 
-# watch an episode: video, or a still PNG overview
-python view_episode.py Dataset/20261026_143452.h5 --list
-python view_episode.py Dataset/20261026_143452.h5 --episode 0
-python view_episode.py Dataset/20261026_143452.h5 --episode all --png
+# 1) Build the cache once (all frames resized to 128x128, about 6 GB for 120k frames).
+#    The train/val/test split (40/5/5 episodes per task) is fixed here and shared by all models.
+python -m jepa.data /path/to/dataset_franka_arm.h5 --out /mnt/t7shield/cache_128 --image-size 128
 
-# 10 full-resolution frames from one episode (first, last, evenly spaced between)
-python extract_frames.py Dataset/20261026_150630.h5 --episode 0 --num 10
+# 2) Train (one command per model)
+python -m jepa.train --cache /mnt/t7shield/cache_128 --config configs/1sp_sigreg.yaml --save-dir runs/1sp_sigreg
+python -m jepa.train --cache /mnt/t7shield/cache_128 --config configs/msp_sigreg.yaml --save-dir runs/msp_sigreg
+python -m jepa.train --cache /mnt/t7shield/cache_128 --config configs/1sp_epidm.yaml  --save-dir runs/1sp_epidm
+python -m jepa.train --cache /mnt/t7shield/cache_128 --config configs/msp_epidm.yaml  --save-dir runs/msp_epidm
+python -m jepa.train --cache /mnt/t7shield/cache_128 --config configs/1sp_gcb.yaml    --save-dir runs/1sp_gcb
+python -m jepa.train --cache /mnt/t7shield/cache_128 --config configs/msp_gcb.yaml    --save-dir runs/msp_gcb
 
-# training data
-python franka_dataset.py check-quat Dataset                      # find the quaternion order
-python franka_dataset.py build-cache Dataset --out cache_224 --size 224 224
-python franka_dataset.py demo cache_224 --quat-order wxyz
+# 3) Evaluate each model, then compare them
+for m in 1sp_sigreg msp_sigreg 1sp_epidm msp_epidm 1sp_gcb msp_gcb; do
+  python -m jepa.evaluate --ckpt runs/$m/model_final.pt --cache /mnt/t7shield/cache_128 --out eval/$m
+done
+python -m jepa.compare --evals eval/* --runs runs/* --out eval/compare
 ```
 
-```python
-from franka_dataset import FrankaDataset, split_episodes
+Useful training options:
+- **`--amp`:** bfloat16 autocast, much faster on A100/H100/RTX 30xx or newer GPUs.
+- **`--resume`:** continue from `runs/<model>/checkpoints/last.pt`.
+- **`--set section.key=value`:** override any config entry, e.g. `--set training.batch_size=128 data.horizon=5`.
+- **Zero-shot hold-out:** train on a subset of tasks with
+  `--set "data.tasks=[pick_and_place_banana, pick_and_place_chips, rotate_banana, rotate_chips]"`,
+  then evaluate on all tasks.
 
-train_eps, val_eps = split_episodes("cache_224", val_fraction=0.15)
-train = FrankaDataset("cache_224", episodes=train_eps, action_mode="delta", quat_order="wxyz")
-val = FrankaDataset("cache_224", episodes=val_eps, action_mode="delta", quat_order="wxyz",
-                    stats=train.stats)
+`runs/<model>/` contains `model_final.pt` (use this for comparisons), `model_best.pt` (lowest
+validation loss of that model's own objective), `history.json` (losses plus a quick probe every
+5 epochs) and `checkpoints/epochXXXX.pt`.
+
+## 4. What the evaluation measures
+
+`jepa.evaluate` works on the held-out test episodes and fits its probes on training episodes.
+Figures go to `eval/<model>/figs/`; every number is in `eval/<model>/metrics.json`.
+
+| | Question | Analysis |
+|---|---|---|
+| A | What is in `z_t`? | Linear and MLP probes: EE position / rotation / velocities, gripper, joints, task progress. Linear and kNN accuracy for task, family and object. Action R² from `(z_t, z_{t+1})` |
+| B | Is one family's physics favoured? | The same probes evaluated, and refitted, inside each family: position on pick-and-place vs. rotation and angular velocity on rotate |
+| B | What survives prediction? | Probes applied to k-step predictions `ẑ_{t+k}` (k = 1..10), rollout error vs. k per family, task accuracy from predictions |
+| C | How is the space organized? | Covariance spectrum and effective rank (overall, per task), 1-D projections vs. N(0, 1) and Epps–Pulley statistic (LeJEPA), PCA / t-SNE coloured by task, progress, gripper and height, overlap of per-task principal subspaces, between/within-task variance, temporal straightening and transition r95 |
+| D | Is the geometry goal-aware? | Monotonicity of `‖z_t − z_goal‖` along episodes (planning-cost shape), a steps-to-goal probe from `(z_t, z_g)`, GCB-style analogies `z(B_0) + z(A_T) − z(A_0)` → nearest neighbour (same task / same family with another object) |
+| E | Is it usable for planning? | Offline CEM towards the frame 5 latent steps ahead, compared with the recorded actions; probability that random action sequences score lower than the recorded one |
+| F | What does the encoder look at? | First 3 principal components of the patch tokens as RGB (LeJEPA Fig. 14) |
+
+`jepa.compare` puts all models on the same axes (`cmp_*.png`), writes `summary.md` / `summary.csv`,
+and plots training loss vs. probe accuracy over epochs (LeJEPA Fig. 1).
+
+Not covered yet:
+- **Object orientation:** the dataset has no object pose labels, so rotation information is
+  measured through the end-effector pose, which follows the object while it is grasped.
+- **Closed-loop success rates:** these need the robot (or a simulator). The planner in
+  `jepa/evaluate.py` (`cem_plan`) is the piece to reuse for deployment.
+
+## 5. Data tools (earlier dataset)
+
+```bash
+python inspect_dataset.py Dataset                         # what is in a dataset (any format)
+python view_episode.py Dataset/<file>.h5 --episode all --png
+python extract_frames.py Dataset/<file>.h5 --episode 0 --num 10
+python franka_dataset.py check-quat Dataset               # quaternion order (wxyz on this robot)
 ```
-
-See the docstring at the top of `franka_dataset.py` for all options: action modes, multi-frame windows, normalization.
-
-Requirements: `numpy h5py matplotlib pillow torch`. For `.mp4` videos, also install ffmpeg: `pip install imageio-ffmpeg`.

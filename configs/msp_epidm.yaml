@@ -1,0 +1,7 @@
+# MSP+EP-IDM: multi-step prediction + endpoint inverse dynamics
+inherit: base.yaml
+model:
+  use_endpoint_inverse: true
+training:
+  prediction: multi_step
+  lambda_epidm: 1.0

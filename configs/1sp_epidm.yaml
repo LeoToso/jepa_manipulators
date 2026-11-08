@@ -1,0 +1,7 @@
+# 1SP+EP-IDM: one-step prediction + endpoint inverse dynamics (a_{t:t+H} from z_t, z_{t+H})
+inherit: base.yaml
+model:
+  use_endpoint_inverse: true
+training:
+  prediction: one_step
+  lambda_epidm: 1.0

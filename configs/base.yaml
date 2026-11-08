@@ -1,0 +1,43 @@
+# Shared settings for all six models. Each model config inherits this file and only
+# sets its prediction mode and auxiliary loss, so differences between runs come
+# from the objective alone.
+data:
+  action_mode: delta_next   # per-step action = achieved EE motion [dpos, drot, gripper cmd]
+  frame_skip: 2             # 1 latent step = 2 recorded steps (10 Hz -> 5 Hz); action chunk = 2 x 7
+  horizon: 3                # latent steps per training window (1.2 s)
+  quat_order: wxyz          # verified with `python franka_dataset.py check-quat`
+  tasks: null               # null = all tasks; or a list of task names to train on (zero-shot hold-out)
+  start_stride: 1
+  val_start_stride: 4
+  goal_geom_p: 0.3          # hindsight goal offset k ~ Geometric(0.3), P(k = 1) = 0.3 (GCB only)
+  goal_max_offset: 30       # latent steps (12 s)
+
+model:
+  image_size: 128           # must match the cache (`python -m jepa.data ... --image-size 128`)
+  patch_size: 8
+  use_frame_diff: true      # encoder sees [o_{t-1}, o_t, o_t - o_{t-1}]: velocity is observable
+  vit_embed_dim: 192
+  vit_depth: 4
+  vit_heads: 3
+  latent_dim: 192
+  predictor_hidden_dim: 192
+  predictor_depth: 6
+  predictor_heads: 16
+  predictor_dim_head: 64
+  predictor_mlp_dim: 2048
+  predictor_dropout: 0.1
+  inverse_hidden_dim: 256
+  gcb_hidden_dim: 512
+
+training:
+  epochs: 50
+  batch_size: 64
+  num_workers: 8
+  lr: 1.0e-4
+  min_lr: 1.0e-6
+  warmup_epochs: 2
+  weight_decay: 1.0e-3
+  grad_clip: 1.0
+  probe_every: 5
+  checkpoint_every: 5       # epoch snapshots, used by `jepa.evaluate --snapshots` (loss vs probe)
+  lambda_pred: 1.0

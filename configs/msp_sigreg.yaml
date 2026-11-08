@@ -1,0 +1,7 @@
+# MSP+SIG: multi-step (autoregressive, H = 3) prediction + SIGReg
+inherit: base.yaml
+training:
+  prediction: multi_step
+  lambda_sigreg: 0.05
+  sigreg_impl: lejepa
+  sigreg_num_slices: 256

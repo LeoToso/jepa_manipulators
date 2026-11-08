@@ -1,0 +1,12 @@
+# 1SP+GCB: one-step prediction + goal-conditioned bisimulation (reward-free), for symmetry with 1)-2)
+inherit: base.yaml
+model:
+  use_gcb: true
+training:
+  prediction: one_step
+  lambda_gcb_phi: 1.0
+  lambda_gcb_psi: 1.0
+  lambda_gcb_reward: 1.0
+  gcb_gamma: 0.99
+  gcb_reward_scale: 1.0
+  gcb_phi_grad_to_encoder: true

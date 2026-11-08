@@ -1,0 +1,8 @@
+# Python >= 3.8. PyTorch >= 2.0 recommended (older versions fall back to explicit attention).
+torch>=1.13
+numpy
+h5py
+pyyaml
+pillow
+matplotlib>=3.5
+scikit-learn   # MLP probes and t-SNE in jepa.evaluate (optional: --no-mlp --no-tsne)
