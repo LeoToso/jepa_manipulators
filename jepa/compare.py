@@ -70,8 +70,13 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     Ms = []
     for d in a.evals:
-        with open(os.path.join(d, 'metrics.json')) as fh:
+        path = os.path.join(d, 'metrics.json')
+        if not os.path.exists(path):  # e.g. the output folder itself when using eval/*
+            print(f'[skip] {d}: no metrics.json')
+            continue
+        with open(path) as fh:
             Ms.append(json.load(fh))
+    a.runs = [r for r in a.runs if os.path.exists(os.path.join(r, 'history.json'))]
     names = a.names or [m['name'] for m in Ms]
     fams = Ms[0]['families']
     quantities = list(Ms[0]['A']['linear_r2'])
