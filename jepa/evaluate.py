@@ -33,8 +33,8 @@ import torch
 
 from jepa.data import Cache, quat_conj, quat_mul, quat_to_rotvec, task_family, task_object, to_wxyz
 from jepa.models import load_checkpoint
-from jepa.probes import (Standardizer, effective_rank, knn_classify, mlp_r2, ridge_classify,
-                         ridge_fit, ridge_r2, r2_score)
+from jepa.probes import (Standardizer, effective_rank, knn_classify, mlp_r2, r2_guarded,
+                         ridge_classify, ridge_fit, ridge_r2, r2_score)
 
 QUANTITIES = ['ee_pos', 'ee_rot', 'gripper', 'joints', 'ee_lin_vel', 'ee_ang_vel', 'progress']
 
@@ -241,16 +241,19 @@ def run(args):
     M['A'] = A
 
     # ---- B: per-family probes (position vs rotation) --------------------------
+    # R^2 inside a family uses the family's own variance; dimensions that barely vary
+    # within the family (< 0.1% of their global variance) are skipped (NaN if all are)
     B = {}
     for fi, fam in enumerate(c.families):
-        sel = fte == fi
-        B[fam] = {q: float(r2_score(lab[q][te_frames[sel]], probes[q](zte[sel])).mean())
+        sel, sel_tr = fte == fi, ftr == fi
+        B[fam] = {q: r2_guarded(lab[q][te_frames[sel]], probes[q](zte[sel]), lab[q][te_frames].var(0))
                   for q in QUANTITIES}
-        # probes trained inside the family only (is the information there at all?)
-        sel_tr = ftr == fi
-        B[fam + '_within'] = {q: float(ridge_r2(ztr[sel_tr], lab[q][tr_frames[sel_tr]], zte[sel],
-                                                lab[q][te_frames[sel]], args.ridge).mean())
-                              for q in ('ee_pos', 'ee_rot', 'gripper', 'ee_lin_vel', 'ee_ang_vel')}
+        # probes fitted inside the family only (is the information there at all?)
+        B[fam + '_within'] = {
+            q: r2_guarded(lab[q][te_frames[sel]],
+                          ridge_fit(ztr[sel_tr], lab[q][tr_frames[sel_tr]], args.ridge)(zte[sel]),
+                          lab[q][te_frames].var(0))
+            for q in ('ee_pos', 'ee_rot', 'gripper', 'ee_lin_vel', 'ee_ang_vel')}
     M['B_family'] = B
 
     # ---- B: predicted latents --------------------------------------------------

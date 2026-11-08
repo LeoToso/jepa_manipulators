@@ -28,6 +28,16 @@ def r2_score(y, pred):
     return 1.0 - np.sum((y - pred) ** 2, axis=0) / np.maximum(denom, 1e-12)
 
 
+def r2_guarded(y, pred, ref_var, rel=1e-3):
+    """Mean R^2 over dimensions, skipping dimensions whose variance in y is below
+    rel * ref_var (e.g. a quantity that barely moves inside one task family), where
+    R^2 is meaningless. NaN if every dimension is skipped."""
+    y, pred = y.reshape(len(y), -1), pred.reshape(len(pred), -1)
+    r2 = r2_score(y, pred)
+    ok = y.var(0) >= rel * np.asarray(ref_var).reshape(-1)
+    return float(r2[ok].mean()) if ok.any() else float('nan')
+
+
 def ridge_r2(x_tr, y_tr, x_te, y_te, ridge=1e-2):
     y_tr, y_te = y_tr.reshape(len(y_tr), -1), y_te.reshape(len(y_te), -1)
     return r2_score(y_te, ridge_fit(x_tr, y_tr, ridge)(x_te))
