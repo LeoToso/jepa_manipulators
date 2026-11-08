@@ -15,8 +15,9 @@ Anti-collapse / structure terms:
     EP-IDM   endpoint inverse dynamics (JEPA_control): the H normalized action
              chunks from (z_t, z_{t+H}) only, MSE.
     GCB      goal-conditioned bisimulation (Hansen-Estruch et al. 2022):
-             L_phi = ( ||phi(s_i,g_i) - phi(s_j,g_j)||_1 - |r_i - r_j|
-                       - gamma ||phibar(s'_i,g_i) - phibar(s'_j,g_j)||_2 )^2     (Eq. 6)
+             L_phi = ( ||phi(s_i,g_i) - phi(s_j,g_j)||_1 - (1-gamma) |r_i - r_j|
+                       - gamma ||phibar(s'_i,g_i) - phibar(s'_j,g_j)||_2 )^2     (Eq. 6 with
+                                                         the (1-gamma) of their Prop. 6.1)
              L_psi = || (phibar(s,g) - phibar(g,g)) - (psi(g) - psi(s)) ||_2^2   (Eq. 7)
              (default: per-dimension mean |.| on both sides, see gcb_losses)
              L_rew = MSE( R(phi(s,g), phi(s',g)), r )  (BCE for the 0/1 indicator)  (App. D.5)
@@ -128,7 +129,11 @@ def gcb_losses(model, x_s, x_next, x_goal, z_s, z_goal, r, binary_reward, gamma=
     perm = torch.randperm(b, device=phi.device)
     dist = l1(phi - phi[perm])
     with torch.no_grad():
-        target = (r - r[perm]).abs() + gamma * l2(phi_next - phi_next[perm])
+        # (1 - gamma) weighting as in their Prop. 6.1, F = (1-c)|dR| + c W(d): same fixed-point
+        # geometry, scaled to O(max |dr|). Eq. 6 drops it; since consecutive frames give
+        # phi(s', g) ~ phi(s, g), the unweighted fixed point is ~|dr| / (1 - gamma) = 100x, and
+        # the slowly inflating metric dragged psi (and the prediction loss) with it.
+        target = (1 - gamma) * (r - r[perm]).abs() + gamma * l2(phi_next - phi_next[perm])
         anchor = phi - heads.pair(f_g, f_g)
     l_phi = ((dist - target) ** 2).mean()
     l_psi = sq(anchor - (z_goal - z_s)).mean()

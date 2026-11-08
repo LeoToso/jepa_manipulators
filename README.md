@@ -62,8 +62,11 @@ They differ only in the objective:
 - **GCB** ([Hansen-Estruch et al. 2022](https://arxiv.org/abs/2204.13060)):
   - `ψ(s) = z` is the JEPA latent. As in their Fig. 3, `φ(s, g)` has its own image encoder (same
     ViT) and an MLP on `[f_s, f_g, f_g − f_s]`; φ never depends on ψ.
-  - Metric loss (their Eq. 6): `(d(φ(s_i,g_i), φ(s_j,g_j)) − |r_i − r_j| − γ d(φ̄(s'_i,g_i), φ̄(s'_j,g_j)))²`,
+  - Metric loss (their Eq. 6): `(d(φ(s_i,g_i), φ(s_j,g_j)) − (1−γ)|r_i − r_j| − γ d(φ̄(s'_i,g_i), φ̄(s'_j,g_j)))²`,
     with j a random permutation of the batch, the recorded next state s', and γ = 0.99.
+    The (1−γ) factor comes from their Prop. 6.1. Without it, since consecutive frames have
+    nearly equal φ, the fixed point is about |Δr|/(1−γ) = 100× the reward scale. In tests that
+    slowly inflated the metric, and the analogy loss inflated the latent with it.
   - Analogy loss (Eq. 7): `‖(φ̄(s,g) − φ̄(g,g)) − (z_g − z_s)‖²`. This is the only GCB term that
     shapes the JEPA latent. The reward decoder (App. D.5) is also included.
   - **Hindsight goals:** g is a later frame of the same episode (offset k ~ Geometric(0.3), up
