@@ -110,7 +110,20 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
     obs = batch['obs'].to(device, non_blocking=True)
     prev = batch['prev_obs'].to(device, non_blocking=True)
     actions = batch['actions'].to(device, non_blocking=True).float()
-    z = model.encode_seq(obs, prev)
+    use_gcb = model.gcb is not None and any(float(tc.get(k, 0.0)) > 0 for k in
+                                            ('lambda_gcb_phi', 'lambda_gcb_psi', 'lambda_gcb_reward'))
+    b, t = obs.shape[:2]
+    if use_gcb:
+        # Goals go through the encoder in the same forward pass as the window: in train mode
+        # BatchNorm uses per-call statistics, so a separate call would give the same frame a
+        # different latent and break both r = 1[s' = g] and the phi(g, g) anchor.
+        flat_obs = torch.cat([obs.reshape(b * t, *obs.shape[2:]), batch['goal_obs'].to(device, non_blocking=True)])
+        flat_prev = torch.cat([prev.reshape(b * t, *prev.shape[2:]),
+                               batch['goal_prev_obs'].to(device, non_blocking=True)])
+        zall = model.encode(flat_obs, flat_prev)
+        z, z_goal = zall[:b * t].reshape(b, t, -1), zall[b * t:]
+    else:
+        z = model.encode_seq(obs, prev)
     terms = {}
     l_pred, pred = prediction_loss(model, z, actions, tc['prediction'])
     total = float(tc.get('lambda_pred', 1.0)) * l_pred
@@ -135,10 +148,7 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
         total = total + lam * inv
         terms['epidm'] = inv
 
-    if model.gcb is not None and any(float(tc.get(k, 0.0)) > 0 for k in
-                                     ('lambda_gcb_phi', 'lambda_gcb_psi', 'lambda_gcb_reward')):
-        z_goal = model.encode(batch['goal_obs'].to(device, non_blocking=True),
-                              batch['goal_prev_obs'].to(device, non_blocking=True))
+    if use_gcb:
         k = batch['goal_offset'].to(device)
         l_phi, l_psi, l_rew = gcb_losses(
             model, z[:, 0], z[:, 1], z_goal, k, float(tc.get('gcb_gamma', 0.99)),
