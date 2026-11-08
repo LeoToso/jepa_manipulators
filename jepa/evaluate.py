@@ -217,7 +217,8 @@ def run(args):
         f = ridge_fit(ztr, lab[q][tr_frames], args.ridge)
         probes[q] = f
         r2 = r2_score(lab[q][te_frames], f(zte))
-        A['linear_r2'][q], A['linear_r2_per_dim'][q] = float(r2.mean()), r2.tolist()
+        A['linear_r2'][q] = r2_guarded(lab[q][te_frames], f(zte), lab[q][te_frames].var(0))
+        A['linear_r2_per_dim'][q] = r2.tolist()
         if not args.no_mlp and q in ('ee_pos', 'ee_rot', 'gripper', 'progress'):
             m = mlp_r2(ztr, lab[q][tr_frames], zte, lab[q][te_frames], args.seed)
             A['mlp_r2'][q] = None if m is None else float(np.mean(m))

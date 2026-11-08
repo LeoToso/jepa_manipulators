@@ -223,16 +223,19 @@ def main():
         for r in a.runs:
             with open(os.path.join(r, 'history.json')) as fh:
                 hists.append(json.load(fh))
-        run_names = a.names or [os.path.basename(os.path.normpath(r)) for r in a.runs]
+        run_names = [os.path.basename(os.path.normpath(r)) for r in a.runs]
+        # same colour as the model's evaluation (matched by folder name) in every figure
+        rc = [COLORS[names.index(n) % 10] if n in names else COLORS[(len(names) + i) % 10]
+              for i, n in enumerate(run_names)]
         fig, axes = plt.subplots(1, 4, figsize=(18, 3.6))
         for i, (h, n) in enumerate(zip(hists, run_names)):
             ep = [r['epoch'] for r in h]
-            axes[0].plot(ep, [r['val']['rel_err_multi_step'] for r in h], color=COLORS[i], label=n)
+            axes[0].plot(ep, [r['val']['rel_err_multi_step'] for r in h], color=rc[i], label=n)
             axes[1].plot(ep, [r['val']['err_one_step'] / max(r['val']['latent_std'] ** 2, 1e-12) for r in h],
-                         color=COLORS[i])
+                         color=rc[i])
             pe = [r for r in h if 'probe' in r]
-            axes[2].plot([r['epoch'] for r in pe], [r['probe']['r2_ee_pos'] for r in pe], 'o-', color=COLORS[i])
-            axes[3].plot([r['epoch'] for r in pe], [r['probe']['task_acc'] for r in pe], 'o-', color=COLORS[i])
+            axes[2].plot([r['epoch'] for r in pe], [r['probe']['r2_ee_pos'] for r in pe], 'o-', color=rc[i])
+            axes[3].plot([r['epoch'] for r in pe], [r['probe']['task_acc'] for r in pe], 'o-', color=rc[i])
         for ax, t in zip(axes, ['val rollout MSE / var (H steps)', 'val one-step MSE / std$^2$',
                                 'quick probe R$^2$ EE position', 'quick probe task accuracy']):
             ax.set_title(t, fontsize=9)

@@ -34,7 +34,7 @@ def r2_guarded(y, pred, ref_var, rel=1e-3):
     R^2 is meaningless. NaN if every dimension is skipped."""
     y, pred = y.reshape(len(y), -1), pred.reshape(len(pred), -1)
     r2 = r2_score(y, pred)
-    ok = y.var(0) >= rel * np.asarray(ref_var).reshape(-1)
+    ok = y.var(0) >= np.maximum(rel * np.asarray(ref_var).reshape(-1), 1e-10)
     return float(r2[ok].mean()) if ok.any() else float('nan')
 
 
