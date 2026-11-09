@@ -60,7 +60,10 @@ def make_loaders(cache, cfg, batch_size, num_workers, seed):
               pin_memory=num_workers > 0 and torch.cuda.is_available(),
               worker_init_fn=worker_init_fn, persistent_workers=num_workers > 0)
     return (DataLoader(train, shuffle=True, drop_last=True, **kw),
-            DataLoader(val, shuffle=False, **kw), stats)
+            # fixed random order: consecutive windows of one episode in a batch are highly
+            # correlated, which inflates batch statistics such as SIGReg (val >> train)
+            DataLoader(val, sampler=np.random.RandomState(seed).permutation(len(val)).tolist(), **kw),
+            stats)
 
 
 @torch.no_grad()
