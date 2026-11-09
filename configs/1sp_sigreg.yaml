@@ -1,7 +1,7 @@
-# 1SP+SIG: one-step (teacher-forced) prediction + SIGReg (LeJEPA, lambda = 0.05 as recommended)
+# 1SP+SIG: one-step (teacher-forced) prediction + SIGReg (lambda = 1; LeJEPA recommends 0.05 for this N-scaled form)
 inherit: base.yaml
 training:
   prediction: one_step
-  lambda_sigreg: 0.05
-  sigreg_impl: lejepa       # 'jepa_control' reproduces the JEPA_control variant (then use lambda 1.0)
+  lambda_sigreg: 1.0
+  sigreg_impl: lejepa       # official N-scaled form; 'jepa_control' = the unscaled variant from JEPA_control
   sigreg_num_slices: 256

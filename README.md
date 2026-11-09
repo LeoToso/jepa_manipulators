@@ -56,7 +56,8 @@ They differ only in the objective:
   are the achieved end-effector motion in the base frame. To execute a planned action,
   command `x_ee_des = x_ee ⊕ a`.
 - **SIGReg:** the official LeJEPA form (Epps–Pulley statistic, trapezoid rule on [0, 3],
-  Gaussian weight, multiplied by N, 256 random directions per step) with λ = 0.05.
+  Gaussian weight, multiplied by N, 256 random directions per step) with λ = 1
+  (LeJEPA recommends 0.05 for this N-scaled form; λ = 1 weights it about 20× more strongly).
   `sigreg_impl: jepa_control` reproduces the JEPA_control variant.
 - **EP-IDM:** predicts the H action chunks from `(z_t, z_{t+H})` only.
 - **GCB** ([Hansen-Estruch et al. 2022](https://arxiv.org/abs/2204.13060)):
