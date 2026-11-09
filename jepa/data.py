@@ -106,6 +106,22 @@ def _decode(x):
     return x.decode() if isinstance(x, bytes) else str(x)
 
 
+def parse_task_names(attr):
+    """The `tasks` root attribute as a list of names. Accepts an array of strings, or a
+    single string holding a JSON list ('["a", "b"]') or comma-separated names."""
+    if attr is None:
+        return []
+    if isinstance(attr, (bytes, str, np.bytes_, np.str_)) or np.ndim(attr) == 0:
+        text = _decode(attr.item() if hasattr(attr, 'item') else attr).strip()
+        if text.startswith('['):
+            try:
+                return [str(t) for t in json.loads(text)]
+            except ValueError:
+                text = text.strip('[]')
+        return [t.strip().strip('\'"') for t in text.split(',') if t.strip()]
+    return [_decode(t) for t in attr]
+
+
 def _episode_task(name, group, episodes_per_task, task_names):
     for key in ('task_id', 'task'):
         if key in group.attrs:
@@ -133,7 +149,7 @@ def build_cache(h5_path, out, image_size=128, camera=None, val_per_task=5,
     import h5py
     os.makedirs(out, exist_ok=True)
     with h5py.File(h5_path, 'r') as f:
-        task_names = [_decode(t) for t in f.attrs.get('tasks', [])]
+        task_names = parse_task_names(f.attrs.get('tasks'))
         ept = int(f.attrs.get('episodes_per_task', 0)) or None
         names = sorted(k for k in f.keys() if isinstance(f[k], h5py.Group))
         if max_episodes:
@@ -149,6 +165,9 @@ def build_cache(h5_path, out, image_size=128, camera=None, val_per_task=5,
             cams.append(cam)
         if not task_names:
             task_names = [f'task_{i}' for i in range(max(tasks) + 1)]
+        if max(tasks) >= len(task_names):
+            raise ValueError(f'task id {max(tasks)} but only {len(task_names)} task names: {task_names}')
+        print('tasks:', task_names)
         total = int(sum(lengths))
         print(f'{len(names)} episodes, {total} frames, {len(task_names)} tasks -> {out} '
               f'(images {image_size}x{image_size}: {total * image_size ** 2 * 3 / 1e9:.1f} GB)')
@@ -356,6 +375,25 @@ def worker_init_fn(worker_id):
     info.dataset.rng = np.random.RandomState((torch.initial_seed() + worker_id) % 2 ** 32)
 
 
+def update_task_names(h5_path, out):
+    """Rewrite only the task names in <out>/meta.json from the dataset's `tasks` attribute
+    (task ids and the episode split are unchanged; no images are touched)."""
+    import h5py
+    with h5py.File(h5_path, 'r') as f:
+        names = parse_task_names(f.attrs.get('tasks'))
+    path = os.path.join(out, 'meta.json')
+    with open(path) as fh:
+        meta = json.load(fh)
+    n_tasks = int(np.load(os.path.join(out, 'lowdim.npz'))['episode_task'].max()) + 1
+    if len(names) != n_tasks:
+        raise ValueError(f'{len(names)} task names but the cache has {n_tasks} task ids: {names}')
+    meta['tasks'] = names
+    with open(path, 'w') as fh:
+        json.dump(meta, fh, indent=1)
+    print('tasks:', names)
+    print('split (episodes): ' + ', '.join(f'{k}={len(v)}' for k, v in meta['splits'].items()))
+
+
 def main():
     import argparse
     p = argparse.ArgumentParser(description='Build the training cache from dataset_franka_arm.h5')
@@ -367,7 +405,11 @@ def main():
     p.add_argument('--test-per-task', type=int, default=5)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--max-episodes', type=int, default=None, help='debug: only the first N episodes')
+    p.add_argument('--meta-only', action='store_true',
+                   help='only rewrite the task names in an existing cache (no images)')
     a = p.parse_args()
+    if a.meta_only:
+        return update_task_names(a.h5, a.out)
     build_cache(a.h5, a.out, a.image_size, a.camera, a.val_per_task, a.test_per_task, a.seed,
                 max_episodes=a.max_episodes)
 
