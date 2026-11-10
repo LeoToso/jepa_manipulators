@@ -1,7 +1,9 @@
 """Training objectives.
 
-Prediction (always Markov, z_{t+1} ~ f(z_t, a_t)):
-    one_step (1SP)    teacher-forced: mean_k || f(z_k, a_k) - z_{k+1} ||^2
+Prediction (as JEPA_control):
+    one_step (1SP)    teacher-forced over the window with the causal predictor:
+                      mean_k || f(z_0..z_k, a_0..a_k) - z_{k+1} ||^2  (one_step_context: markov
+                      uses f(z_k, a_k) only)
     multi_step (MSP)  autoregressive from z_0: mean_k || zhat_k - z_k ||^2,
                       zhat_{k+1} = f(zhat_k, a_k), gradients through the chain
     Targets are not stop-gradiented (as in JEPA_control / LeWorldModel); the
@@ -57,10 +59,17 @@ def sigreg_jepa_control(z, num_slices=128, num_points=17):
     return ((wy.cos().mean(-1) - target) ** 2 + wy.sin().mean(-1) ** 2).mean()
 
 
-def prediction_loss(model, z, actions, mode):
-    """Returns (loss, predictions (b, H, d))."""
+def prediction_loss(model, z, actions, mode, one_step_context='window'):
+    """Returns (loss, predictions (b, H, d)).
+
+    one_step_context='window' (JEPA_control): teacher-forced over the whole window with the
+        causal predictor, so the prediction of z_{t+1} attends to z_0..z_t.
+    one_step_context='markov': each z_{t+1} predicted from z_t alone.
+    """
     b, t, d = z.shape
-    if mode == 'one_step':
+    if mode == 'one_step' and one_step_context == 'window':
+        pred = model.predict_window(z[:, :-1], actions)
+    elif mode == 'one_step':
         pred = model.step(z[:, :-1].reshape(-1, d), actions.reshape(b * (t - 1), -1)).reshape(b, t - 1, d)
     elif mode == 'multi_step':
         pred = model.rollout(z[:, 0], actions)
@@ -97,7 +106,7 @@ def gcb_reward(kind, goal_offset, next_state=None, goal_state=None, z_next=None,
 
 
 def gcb_losses(model, x_s, x_next, x_goal, z_s, z_goal, r, binary_reward, gamma=0.99,
-               distance='normalized'):
+               distance='normalized', proprio=None):
     """x_*: encoder inputs of s, s', g (same pass, so s' = g gives identical features);
     z_s, z_goal: JEPA latents psi(s), psi(g); r: reward of each sample (see gcb_reward).
 
@@ -123,7 +132,7 @@ def gcb_losses(model, x_s, x_next, x_goal, z_s, z_goal, r, binary_reward, gamma=
     else:
         raise ValueError(f'gcb_distance must be paper or normalized, got {distance!r}')
     b = x_s.shape[0]
-    f_s, f_n, f_g = heads.encoder(torch.cat([x_s, x_next, x_goal])).split(b)
+    f_s, f_n, f_g = heads.encoder(torch.cat([x_s, x_next, x_goal]), proprio).split(b)
     phi = heads.pair(f_s, f_g)
     phi_next = heads.pair(f_n, f_g)
     perm = torch.randperm(b, device=phi.device)
@@ -148,6 +157,7 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
     obs = batch['obs'].to(device, non_blocking=True)
     prev = batch['prev_obs'].to(device, non_blocking=True)
     actions = batch['actions'].to(device, non_blocking=True).float()
+    proprio = batch['proprio'].to(device, non_blocking=True) if model.use_proprio else None
     use_gcb = model.gcb is not None and any(float(tc.get(k, 0.0)) > 0 for k in
                                             ('lambda_gcb_phi', 'lambda_gcb_psi', 'lambda_gcb_reward'))
     b, t = obs.shape[:2]
@@ -158,12 +168,16 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
         flat_obs = torch.cat([obs.reshape(b * t, *obs.shape[2:]), batch['goal_obs'].to(device, non_blocking=True)])
         flat_prev = torch.cat([prev.reshape(b * t, *prev.shape[2:]),
                                batch['goal_prev_obs'].to(device, non_blocking=True)])
-        zall = model.encode(flat_obs, flat_prev)
+        flat_prop = None
+        if proprio is not None:
+            flat_prop = torch.cat([proprio.reshape(b * t, -1), batch['goal_proprio'].to(device, non_blocking=True)])
+        zall = model.encode(flat_obs, flat_prev, flat_prop)
         z, z_goal = zall[:b * t].reshape(b, t, -1), zall[b * t:]
     else:
-        z = model.encode_seq(obs, prev)
+        z = model.encode_seq(obs, prev, proprio)
     terms = {}
-    l_pred, pred = prediction_loss(model, z, actions, tc['prediction'])
+    ctx = str(tc.get('one_step_context', 'window'))
+    l_pred, pred = prediction_loss(model, z, actions, tc['prediction'], ctx)
     total = float(tc.get('lambda_pred', 1.0)) * l_pred
     terms['pred'] = l_pred
 
@@ -198,7 +212,9 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
         l_phi, l_psi, l_rew = gcb_losses(
             model, model.encoder_input(obs[:, 0], prev[:, 0]), model.encoder_input(obs[:, 1], prev[:, 1]),
             x_goal, z[:, 0], z_goal, r, kind == 'indicator', float(tc.get('gcb_gamma', 0.99)),
-            str(tc.get('gcb_distance', 'normalized')))
+            str(tc.get('gcb_distance', 'normalized')),
+            None if proprio is None else torch.cat([proprio[:, 0], proprio[:, 1],
+                                                    batch['goal_proprio'].to(device, non_blocking=True)]))
         total = (total + float(tc.get('lambda_gcb_phi', 1.0)) * l_phi
                  + float(tc.get('lambda_gcb_psi', 1.0)) * l_psi
                  + float(tc.get('lambda_gcb_reward', 1.0)) * l_rew)
@@ -208,7 +224,7 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
     if with_diagnostics:  # both prediction errors for every model, comparable across objectives
         with torch.no_grad():
             other = 'multi_step' if tc['prediction'] == 'one_step' else 'one_step'
-            l_other, _ = prediction_loss(model, z, actions, other)
+            l_other, _ = prediction_loss(model, z, actions, other, ctx)
             terms[f'err_{tc["prediction"]}'] = l_pred.detach()
             terms[f'err_{other}'] = l_other
             # MSE per element / variance per dimension: 1.0 = no better than predicting the mean

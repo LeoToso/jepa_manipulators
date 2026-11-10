@@ -283,12 +283,43 @@ class Cache:
         return out
 
 
-def action_stats(cache, mode, episodes):
+def action_stats(cache, mode, episodes, norm='scale'):
+    """Per-dimension action normalization from training episodes.
+
+    norm='scale' (default, as JEPA_control's action_scale): divide by the per-dimension RMS,
+        no centering, so a = 0 still means "no motion" (and CEM samples around it).
+    norm='standardize': subtract the mean and divide by the std.
+    """
     acts = cache.actions(mode)
     rows = np.concatenate([np.arange(cache.starts[e], cache.starts[e] + cache.lengths[e] - 1)
                            for e in episodes])
     a = acts[rows].astype(np.float64)
-    return {'mean': a.mean(0).astype(np.float32), 'std': (a.std(0) + 1e-6).astype(np.float32)}
+    if norm == 'scale':
+        return {'mean': np.zeros(a.shape[1], np.float32),
+                'std': (np.sqrt((a ** 2).mean(0)) + 1e-6).astype(np.float32)}
+    if norm == 'standardize':
+        return {'mean': a.mean(0).astype(np.float32), 'std': (a.std(0) + 1e-6).astype(np.float32)}
+    raise ValueError(f'action_norm must be scale or standardize, got {norm!r}')
+
+
+PROPRIO_SOURCES = {  # name -> (cache key, columns)
+    'q': ('q', slice(0, 7)), 'dq': ('dq', slice(0, 7)), 'gripper': ('gripper', slice(0, 1)),
+    'ee_pos': ('x_ee', slice(0, 3)), 'ee_quat': ('x_ee', slice(3, 7)), 'ee_vel': ('v_ee', slice(0, 6)),
+}
+
+
+def proprio_array(cache, keys):
+    """(N, P) raw proprio vector of every frame, e.g. keys = [q, dq, gripper] -> 15-d."""
+    return np.concatenate([cache.low[PROPRIO_SOURCES[k][0]][:, PROPRIO_SOURCES[k][1]]
+                           for k in keys], axis=1).astype(np.float32)
+
+
+def proprio_stats(cache, keys, episodes):
+    """Mean / std over training frames (JEPA_control's state_mean / state_std)."""
+    x = proprio_array(cache, keys)[np.concatenate(
+        [np.arange(cache.starts[e], cache.starts[e] + cache.lengths[e]) for e in episodes])]
+    return {'keys': list(keys), 'mean': x.mean(0).astype(np.float32),
+            'std': np.maximum(x.std(0), 1e-6).astype(np.float32)}
 
 
 class WindowDataset(Dataset):
@@ -300,13 +331,14 @@ class WindowDataset(Dataset):
                                          differencing; clamped at the episode start)
         actions    float (H, 7*fs)       normalized action chunks
         frame      int   (H+1,)          global frame index of every step (labels/probes)
+        proprio    float (H+1, P)        normalized proprio of every step (if proprio is given)
         task, episode  int
-        goal_obs, goal_prev_obs, goal_offset, next_state, goal_state   (if return_goal)
+        goal_obs, goal_prev_obs, goal_offset, next_state, goal_state[, goal_proprio]   (if return_goal)
     """
 
     def __init__(self, cache, split, horizon=3, frame_skip=2, action_mode='delta_next',
                  stats=None, return_goal=False, goal_geom_p=0.3, goal_max_offset=30,
-                 tasks=None, start_stride=1, seed=0):
+                 tasks=None, start_stride=1, seed=0, action_norm='scale', proprio=None):
         self.cache = cache
         self.H, self.fs = int(horizon), int(frame_skip)
         self.return_goal = bool(return_goal)
@@ -315,7 +347,13 @@ class WindowDataset(Dataset):
         self.episodes = cache.split_episodes(split, tasks)
         if not self.episodes:
             raise ValueError(f'no episodes in split {split!r} for tasks {tasks}')
-        self.stats = stats or action_stats(cache, action_mode, cache.split_episodes('train', tasks))
+        self.stats = stats or action_stats(cache, action_mode, cache.split_episodes('train', tasks),
+                                           action_norm)
+        # proprio: None, or proprio_stats(...) -> normalized vector returned per frame
+        self.proprio = None
+        if proprio is not None:
+            self.proprio = ((proprio_array(cache, proprio['keys']) - proprio['mean'])
+                            / proprio['std']).astype(np.float32)
         raw = cache.actions(action_mode)
         self.actions = ((raw - self.stats['mean']) / self.stats['std']).astype(np.float32)
         span = self.H * self.fs  # last frame index offset; needs an action up to span-1
@@ -357,6 +395,8 @@ class WindowDataset(Dataset):
             'actions': torch.from_numpy(actions), 'frame': torch.from_numpy(frames),
             'task': int(c.episode_task[ep]), 'episode': ep,
         }
+        if self.proprio is not None:
+            out['proprio'] = torch.from_numpy(self.proprio[frames])
         if self.return_goal:
             k_avail = (ep_last - start) // self.fs
             k = min(int(self.rng.geometric(self.goal_geom_p)), self.goal_max_offset, k_avail)
@@ -367,6 +407,8 @@ class WindowDataset(Dataset):
             out['goal_frame'] = g
             out['next_state'] = self._state(frames[1])
             out['goal_state'] = self._state(g)
+            if self.proprio is not None:
+                out['goal_proprio'] = torch.from_numpy(self.proprio[g])
         return out
 
 

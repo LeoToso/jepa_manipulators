@@ -44,17 +44,31 @@ They differ only in the objective:
 | `1sp_gcb` | one-step | goal-conditioned bisimulation (reward-free) |
 | `msp_gcb` | multi-step | goal-conditioned bisimulation (reward-free) |
 
-- **Architecture** (from [JEPA_control](https://github.com/LeoToso/JEPA_control)):
-  - Encoder: ViT-Tiny (128×128 input, patch 8, depth 4, 192-d). Input is
-    `[o_{t-1}, o_t, o_t - o_{t-1}]`, so velocity is observable. Its CLS token goes to an MLP
-    projector with BatchNorm, giving a 192-d `z_t`. The encoder sees pixels only: no
-    proprioception, so the probes measure what the encoder extracts from images.
-  - Predictor: a 6-layer AdaLN-zero transformer, used as a Markov map `z_{t+1} = f(z_t, a_t)`.
-    1SP and MSP train exactly the function that planning uses.
-- **Actions:** one latent step is 2 recorded steps (5 Hz). Its action is the chunk of 2
-  per-step actions `[dpos (3), drot (3), gripper command (1)]` (14-d), where dpos and drot
-  are the achieved end-effector motion in the base frame. To execute a planned action,
-  command `x_ee_des = x_ee ⊕ a`.
+- **Architecture:** identical to [JEPA_control](https://github.com/LeoToso/JEPA_control).
+  JEPA_control's encoder, predictor, action embedder and EP-IDM load into these modules with
+  strict parameter-name matching and give exactly the same outputs.
+  - Encoder: ViT-Tiny (128×128 input, patch 8, depth 4, 3 heads, dropout 0.1) on
+    `[o_{t-1}, o_t, o_t − o_{t-1}]`. The CLS feature is concatenated with the normalized
+    proprio vector, then passed through the 2048-wide BatchNorm projector to give a 192-d `z_t`.
+  - Proprio (`proprio_keys`): 7 joint angles, 7 joint velocities and the gripper state
+    (15-d), normalized with the training mean and std, as JEPA_control's `state_mean`/`state_std`.
+    `--set model.use_proprio=false` trains a pixels-only encoder.
+  - Predictor: the 6-layer causal AdaLN-zero transformer (`ARPredictor`).
+    - 1SP is teacher-forced over the window, so the prediction of z_{t+1} attends to z_0..z_t,
+      as in JEPA_control's `train.py`. `one_step_context: markov` uses z_t alone.
+    - MSP and planning call the predictor one token at a time, as in JEPA_control.
+- **Actions:** one latent step is 2 recorded steps (5 Hz). Its action is the 2 per-step actions
+  `[dpos (3), drot (3), gripper command (1)]` concatenated into 14-d, like JEPA_control's
+  PointMaze multi-action. dpos and drot are the achieved end-effector motion in the base frame.
+  - Actions are divided by their per-dimension RMS without centering (JEPA_control's
+    `action_scale`), so 0 means "no motion".
+  - To execute a planned action, command `x_ee_des = x_ee ⊕ a`.
+- **Kept from my version:** the real previous frame is used for the first step's frame
+  difference (JEPA_control's `train.py` uses the frame itself, so that difference is 0), and
+  BatchNorm statistics are recomputed every epoch (see below).
+- **Proprio and the probes:** with proprio in the encoder, robot-state probes (joints, EE pose,
+  gripper) partly measure the proprio input. Object identity (banana / chips / orange) is only
+  visible in the images. Compare with a pixels-only run to separate the two.
 - **SIGReg:** the official LeJEPA form (Epps–Pulley statistic, trapezoid rule on [0, 3],
   Gaussian weight, multiplied by N, 256 random directions per step) with λ = 1
   (LeJEPA recommends 0.05 for this N-scaled form; λ = 1 weights it about 20× more strongly).

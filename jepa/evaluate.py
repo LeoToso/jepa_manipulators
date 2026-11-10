@@ -31,7 +31,8 @@ import os
 import numpy as np
 import torch
 
-from jepa.data import Cache, quat_conj, quat_mul, quat_to_rotvec, task_family, task_object, to_wxyz
+from jepa.data import (Cache, proprio_array, quat_conj, quat_mul, quat_to_rotvec, task_family,
+                       task_object, to_wxyz)
 from jepa.models import load_checkpoint
 from jepa.probes import (Standardizer, effective_rank, knn_classify, mlp_r2, r2_guarded,
                          ridge_classify, ridge_fit, ridge_r2, r2_score)
@@ -57,6 +58,11 @@ class Evaluator:
         stats = self.ckpt['action_stats']
         self.actions = ((self.cache.actions(self.dc['action_mode']) - np.array(stats['mean'], np.float32))
                         / np.array(stats['std'], np.float32)).astype(np.float32)
+        ps = self.ckpt.get('proprio_stats')
+        self.proprio = None
+        if ps is not None:  # normalized exactly as in training
+            self.proprio = ((proprio_array(self.cache, ps['keys']) - np.array(ps['mean'], np.float32))
+                            / np.array(ps['std'], np.float32)).astype(np.float32)
         c = self.cache
         self.fam_names, self.obj_names = c.families, c.objects
         self.task_of_frame = c.episode_task[c.episode_of_frame]
@@ -95,7 +101,8 @@ class Evaluator:
             f = frames[i:i + self.bs]
             o = torch.from_numpy(np.ascontiguousarray(imgs[f])).permute(0, 3, 1, 2).to(self.device)
             p = torch.from_numpy(np.ascontiguousarray(imgs[self.prev_frames(f)])).permute(0, 3, 1, 2).to(self.device)
-            r = self.model.encode(o, p, return_tokens=return_tokens)
+            prop = None if self.proprio is None else torch.from_numpy(self.proprio[f]).to(self.device)
+            r = self.model.encode(o, p, prop, return_tokens=return_tokens)
             if return_tokens:
                 out.append(r[0].float().cpu())
                 toks.append(r[1].float().cpu())

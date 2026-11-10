@@ -5,12 +5,11 @@ model are adapted from JEPA_control (models/jepa_world_model.py, Toso et al.),
 whose architecture follows the Sensorimotor World Model / LeWorldModel. The
 goal-conditioned bisimulation heads follow Hansen-Estruch et al., ICML 2022.
 
-Changes relative to JEPA_control:
-- the predictor is used strictly as a Markov one-step model f(z_t, a_t), both
-  for one-step (teacher-forced) and multi-step (autoregressive) losses, so the
-  two objectives train the same function that planning uses;
-- attention falls back to an explicit implementation on torch < 2.0;
-- the encoder can return patch tokens (for patch-PCA visualizations).
+Same as JEPA_control: encoder (incl. proprio fusion and dropout), predictor, action
+embedder, endpoint inverse model; one-step training is teacher-forced over the window
+with the causal predictor, multi-step training and planning call it one token at a time.
+Additions: attention falls back to an explicit implementation on torch < 2.0, and the
+encoder can return patch tokens (for patch-PCA visualizations).
 """
 from __future__ import annotations
 
@@ -31,49 +30,50 @@ def _causal_attention(q, k, v, dropout_p):
     return F.dropout(att, dropout_p) @ v
 
 
-class _EncoderBlock(nn.Module):
-    """Pre-LN transformer block (same as nn.TransformerEncoderLayer(norm_first=True, gelu))."""
-
-    def __init__(self, dim, heads, mlp_ratio=4.0):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
-        self.norm2 = nn.LayerNorm(dim)
-        self.mlp = nn.Sequential(nn.Linear(dim, int(dim * mlp_ratio)), nn.GELU(),
-                                 nn.Linear(int(dim * mlp_ratio), dim))
-
-    def forward(self, x):
-        h = self.norm1(x)
-        x = x + self.attn(h, h, h, need_weights=False)[0]
-        return x + self.mlp(self.norm2(x))
-
-
 class PatchViTEncoder(nn.Module):
-    """ViT-Tiny-style encoder: patches -> transformer -> CLS -> MLP projector (BN)."""
+    """ViT-Tiny-style encoder with CLS pooling and an MLP projector — identical to
+    JEPA_control's PatchViTEncoder (same layers, parameter names and defaults, including
+    nn.TransformerEncoderLayer's dropout 0.1). The normalized proprio vector, if any, is
+    concatenated to the CLS feature before the projector."""
 
-    def __init__(self, image_size=128, patch_size=8, in_channels=3, embed_dim=192, depth=4,
-                 heads=3, mlp_ratio=4.0, latent_dim=192):
+    def __init__(self, image_size=128, patch_size=8, in_channels=3, proprio_dim=0,
+                 embed_dim=192, depth=4, heads=3, mlp_ratio=4.0, latent_dim=192):
         super().__init__()
         if image_size % patch_size:
             raise ValueError('image_size must be divisible by patch_size')
-        self.grid = image_size // patch_size
+        n = (image_size // patch_size) ** 2
         self.patch = nn.Conv2d(in_channels, embed_dim, patch_size, patch_size)
         self.cls = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos = nn.Parameter(torch.zeros(1, self.grid ** 2 + 1, embed_dim))
-        self.blocks = nn.ModuleList([_EncoderBlock(embed_dim, heads, mlp_ratio) for _ in range(depth)])
+        self.pos = nn.Parameter(torch.zeros(1, n + 1, embed_dim))
+        layer = nn.TransformerEncoderLayer(
+            embed_dim, heads, int(embed_dim * mlp_ratio), batch_first=True,
+            norm_first=True, activation='gelu')
+        try:
+            self.blocks = nn.TransformerEncoder(layer, depth, enable_nested_tensor=False)
+        except TypeError:  # older torch has no enable_nested_tensor
+            self.blocks = nn.TransformerEncoder(layer, depth)
         self.norm = nn.LayerNorm(embed_dim)
-        self.projector = nn.Sequential(nn.Linear(embed_dim, 2048), nn.BatchNorm1d(2048), nn.GELU(),
-                                       nn.Linear(2048, latent_dim))
+        self.proprio_dim = int(proprio_dim)
+        self.projector = nn.Sequential(
+            nn.Linear(embed_dim + self.proprio_dim, 2048),
+            nn.BatchNorm1d(2048), nn.GELU(),
+            nn.Linear(2048, latent_dim))
         nn.init.trunc_normal_(self.cls, std=.02)
         nn.init.trunc_normal_(self.pos, std=.02)
 
-    def forward(self, pixels, return_tokens=False):
+    def forward(self, pixels, proprio=None, return_tokens=False):
         x = self.patch(pixels).flatten(2).transpose(1, 2)
-        x = torch.cat((self.cls.expand(x.shape[0], -1, -1), x), dim=1) + self.pos
-        for blk in self.blocks:
-            x = blk(x)
-        x = self.norm(x)
-        z = self.projector(x[:, 0])
+        cls = self.cls.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls, x), dim=1) + self.pos
+        x = self.norm(self.blocks(x))
+        feature = x[:, 0]
+        if self.proprio_dim:
+            if proprio is None:
+                raise ValueError('proprio is required by this encoder')
+            if proprio.shape[-1] != self.proprio_dim:
+                raise ValueError(f'expected proprio_dim={self.proprio_dim}, got {proprio.shape[-1]}')
+            feature = torch.cat((feature, proprio.float()), dim=-1)
+        z = self.projector(feature)
         return (z, x[:, 1:]) if return_tokens else z
 
 
@@ -196,9 +196,12 @@ class WorldModel(nn.Module):
         d = int(cfg.get('latent_dim', 192))
         self.latent_dim, self.action_dim = d, int(action_dim)
         self.use_frame_diff = bool(cfg.get('use_frame_diff', True))
+        self.use_proprio = bool(cfg.get('use_proprio', False))
+        self.proprio_dim = int(cfg.get('proprio_dim', 0)) if self.use_proprio else 0
         enc_kwargs = dict(
             image_size=int(cfg.get('image_size', 128)), patch_size=int(cfg.get('patch_size', 8)),
-            in_channels=9 if self.use_frame_diff else 3, embed_dim=int(cfg.get('vit_embed_dim', 192)),
+            in_channels=9 if self.use_frame_diff else 3, proprio_dim=self.proprio_dim,
+            embed_dim=int(cfg.get('vit_embed_dim', 192)),
             depth=int(cfg.get('vit_depth', 4)), heads=int(cfg.get('vit_heads', 3)), latent_dim=d)
         self.encoder = PatchViTEncoder(**enc_kwargs)
         self.action_encoder = ActionEmbedder(self.action_dim, d)
@@ -227,15 +230,24 @@ class WorldModel(nn.Module):
             obs = torch.cat((prev, obs, obs - prev), dim=1)
         return obs
 
-    def encode(self, obs, prev_obs=None, return_tokens=False):
-        """obs, prev_obs: (B, 3, S, S) uint8 or float in [0, 1]."""
-        return self.encoder(self.encoder_input(obs, prev_obs), return_tokens=return_tokens)
+    def encode(self, obs, prev_obs=None, proprio=None, return_tokens=False):
+        """obs, prev_obs: (B, 3, S, S) uint8 or float in [0, 1]; proprio: (B, P) normalized."""
+        return self.encoder(self.encoder_input(obs, prev_obs), proprio if self.use_proprio else None,
+                            return_tokens=return_tokens)
 
-    def encode_seq(self, obs, prev_obs=None):
-        """(B, T, 3, S, S) -> (B, T, d)."""
+    def encode_seq(self, obs, prev_obs=None, proprio=None):
+        """(B, T, 3, S, S) [+ (B, T, P)] -> (B, T, d)."""
         b, t = obs.shape[:2]
         flat = lambda x: None if x is None else x.reshape(b * t, *x.shape[2:])
-        return self.encode(flat(obs), flat(prev_obs)).reshape(b, t, -1)
+        return self.encode(flat(obs), flat(prev_obs), flat(proprio)).reshape(b, t, -1)
+
+    def predict_window(self, z, actions):
+        """Teacher-forced one-step predictions over a window with the causal predictor, as
+        JEPA_control's 1SP loss: z (B, T, d), actions (B, T, A) -> (B, T, d), where output t
+        attends to z_0..z_t and predicts z_{t+1}."""
+        b, t, _ = actions.shape
+        a = self.action_encoder(actions.reshape(b * t, -1)).reshape(b, t, -1)
+        return self.predictor(z, a)
 
     def step(self, z, a):
         """Markov one-step prediction: (B, d), (B, A) -> (B, d)."""

@@ -24,7 +24,7 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
-from jepa.data import ACTION_DIM, Cache, WindowDataset, action_stats, worker_init_fn
+from jepa.data import ACTION_DIM, Cache, WindowDataset, action_stats, proprio_stats, worker_init_fn
 from jepa.losses import compute_losses
 from jepa.models import WorldModel, torch_load
 from jepa.probes import ridge_classify, ridge_r2
@@ -49,11 +49,16 @@ def load_config(path):
 def make_loaders(cache, cfg, batch_size, num_workers, seed):
     dc, mc = cfg['data'], cfg['model']
     tasks = dc.get('tasks')
-    stats = action_stats(cache, dc['action_mode'], cache.split_episodes('train', tasks))
+    train_eps = cache.split_episodes('train', tasks)
+    stats = action_stats(cache, dc['action_mode'], train_eps, dc.get('action_norm', 'scale'))
+    pstats = None
+    if mc.get('use_proprio', False):
+        pstats = proprio_stats(cache, mc['proprio_keys'], train_eps)
+        mc['proprio_dim'] = int(len(pstats['mean']))
     common = dict(horizon=dc['horizon'], frame_skip=dc['frame_skip'], action_mode=dc['action_mode'],
                   stats=stats, return_goal=bool(mc.get('use_gcb', False)),
                   goal_geom_p=dc.get('goal_geom_p', 0.3), goal_max_offset=dc.get('goal_max_offset', 30),
-                  tasks=tasks)
+                  tasks=tasks, proprio=pstats)
     train = WindowDataset(cache, 'train', start_stride=dc.get('start_stride', 1), seed=seed, **common)
     val = WindowDataset(cache, 'val', start_stride=dc.get('val_start_stride', 4), seed=seed + 1, **common)
     kw = dict(batch_size=batch_size, num_workers=num_workers,
@@ -63,7 +68,7 @@ def make_loaders(cache, cfg, batch_size, num_workers, seed):
             # fixed random order: consecutive windows of one episode in a batch are highly
             # correlated, which inflates batch statistics such as SIGReg (val >> train)
             DataLoader(val, sampler=np.random.RandomState(seed).permutation(len(val)).tolist(), **kw),
-            stats)
+            stats, pstats)
 
 
 @torch.no_grad()
@@ -74,7 +79,8 @@ def quick_probe(model, train_loader, val_loader, cache, device, max_batches=40):
         for i, b in enumerate(loader):
             if i >= max_batches:
                 break
-            zs.append(model.encode(b['obs'][:, 0].to(device), b['prev_obs'][:, 0].to(device)).float().cpu())
+            prop = b['proprio'][:, 0].to(device) if 'proprio' in b else None
+            zs.append(model.encode(b['obs'][:, 0].to(device), b['prev_obs'][:, 0].to(device), prop).float().cpu())
             frames.append(b['frame'][:, 0])
             tasks.append(b['task'])
         return torch.cat(zs).numpy(), torch.cat(frames).numpy(), torch.cat(tasks).numpy()
@@ -150,8 +156,12 @@ def main():
     if cache.meta['image_size'] != int(mc['image_size']):
         raise ValueError(f'cache images are {cache.meta["image_size"]}px but model.image_size='
                          f'{mc["image_size"]}; rebuild the cache or change the config')
-    train_loader, val_loader, stats = make_loaders(cache, cfg, int(tc['batch_size']),
-                                                   int(tc.get('num_workers', 4)), args.seed)
+    train_loader, val_loader, stats, pstats = make_loaders(cache, cfg, int(tc['batch_size']),
+                                                           int(tc.get('num_workers', 4)), args.seed)
+    if pstats is not None:
+        print(f'[proprio] {pstats["keys"]} -> {mc["proprio_dim"]}-d, fused with the CLS feature')
+    with open(os.path.join(args.save_dir, 'config.yaml'), 'w') as fh:  # now with proprio_dim
+        yaml.safe_dump(cfg, fh, sort_keys=False)
     action_dim = ACTION_DIM * int(dc['frame_skip'])
     model = WorldModel(mc, action_dim).to(device)
     n_params = sum(q.numel() for q in model.parameters() if q.requires_grad)
@@ -233,6 +243,8 @@ def main():
 
         ckpt = {'model': model.state_dict(), 'config': cfg, 'action_dim': action_dim,
                 'action_stats': {k: v.tolist() for k, v in stats.items()}, 'tasks': cache.tasks,
+                'proprio_stats': None if pstats is None else
+                {'keys': pstats['keys'], 'mean': pstats['mean'].tolist(), 'std': pstats['std'].tolist()},
                 'epoch': epoch, 'val': val_terms}
         if val_terms['total'] < best_val:
             best_val = val_terms['total']

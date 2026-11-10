@@ -1,8 +1,10 @@
 # Shared settings for all six models. Each model config inherits this file and only
 # sets its prediction mode and auxiliary loss, so differences between runs come
-# from the objective alone.
+# from the objective alone. Encoder, predictor, proprio fusion and action handling
+# follow JEPA_control.
 data:
   action_mode: delta_next   # per-step action = achieved EE motion [dpos, drot, gripper cmd]
+  action_norm: scale        # divide by per-dim RMS, no centering (0 = no motion), as JEPA_control
   frame_skip: 2             # 1 latent step = 2 recorded steps (10 Hz -> 5 Hz); action chunk = 2 x 7
   horizon: 3                # latent steps per training window (1.2 s)
   quat_order: wxyz          # verified with `python franka_dataset.py check-quat`
@@ -16,6 +18,9 @@ model:
   image_size: 128           # must match the cache (`python -m jepa.data ... --image-size 128`)
   patch_size: 8
   use_frame_diff: true      # encoder sees [o_{t-1}, o_t, o_t - o_{t-1}]: velocity is observable
+  use_proprio: true         # as JEPA_control: normalized proprio concatenated to the CLS feature
+  proprio_keys: [q, dq, gripper]   # 7 joint angles + 7 joint velocities + gripper = 15-d
+                                   # (also available: ee_pos, ee_quat, ee_vel)
   vit_embed_dim: 192
   vit_depth: 4
   vit_heads: 3
@@ -35,9 +40,10 @@ training:
   num_workers: 8
   lr: 1.0e-4
   min_lr: 1.0e-6
-  warmup_epochs: 2
+  warmup_epochs: 5
   weight_decay: 1.0e-3
   grad_clip: 1.0
   probe_every: 5
   checkpoint_every: 5       # epoch snapshots, used by `jepa.evaluate --snapshots` (loss vs probe)
   lambda_pred: 1.0
+  one_step_context: window  # 1SP teacher-forced over the window with the causal predictor (JEPA_control)
