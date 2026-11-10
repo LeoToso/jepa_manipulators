@@ -3,5 +3,6 @@ inherit: base.yaml
 training:
   prediction: multi_step
   lambda_sigreg: 1.0
-  sigreg_impl: lejepa
-  sigreg_num_slices: 256
+  sigreg_impl: jepa_control   # as in JEPA_control (unscaled); 'lejepa' = official N-scaled form,
+                              # ~300-750x stronger at the same lambda (LeJEPA recommends 0.05 for it)
+  sigreg_num_slices: 128

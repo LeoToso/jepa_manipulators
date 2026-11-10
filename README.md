@@ -69,10 +69,12 @@ They differ only in the objective:
 - **Proprio and the probes:** with proprio in the encoder, robot-state probes (joints, EE pose,
   gripper) partly measure the proprio input. Object identity (banana / chips / orange) is only
   visible in the images. Compare with a pixels-only run to separate the two.
-- **SIGReg:** the official LeJEPA form (Epps–Pulley statistic, trapezoid rule on [0, 3],
-  Gaussian weight, multiplied by N, 256 random directions per step) with λ = 1
-  (LeJEPA recommends 0.05 for this N-scaled form; λ = 1 weights it about 20× more strongly).
-  `sigreg_impl: jepa_control` reproduces the JEPA_control variant.
+- **SIGReg:** JEPA_control's variant with λ = 1, as in your paper (`sigreg_impl: jepa_control`, 128
+  random directions per step). `sigreg_impl: lejepa` selects the official LeJEPA form (Epps–Pulley
+  statistic, trapezoid rule on [0, 3], Gaussian weight, multiplied by N). At the same λ the official
+  form is about 300–750× stronger; LeJEPA recommends λ = 0.05 for it. With proprio on the real data,
+  official λ = 1 gave a useless predictor (relative rollout error about 0.97, flat for 30 epochs),
+  and its latents were Gaussian only on training batches (SIGReg 0.6 on training vs. 77 on validation).
 - **EP-IDM:** predicts the H action chunks from `(z_t, z_{t+H})` only.
 - **GCB** ([Hansen-Estruch et al. 2022](https://arxiv.org/abs/2204.13060)):
   - `ψ(s) = z` is the JEPA latent. As in their Fig. 3, `φ(s, g)` has its own image encoder (same
