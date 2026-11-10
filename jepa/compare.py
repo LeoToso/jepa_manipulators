@@ -93,6 +93,8 @@ def main():
                  (f'R2 rot | {f}', (lambda f: lambda m: m['B_family'][f + '_within']['ee_rot'])(f))]
     cols += [('rollout rel err k=1', lambda m: m['B_predicted']['rel_err'][0]),
              ('rollout rel err k=K', lambda m: m['B_predicted']['rel_err'][-1]),
+             ('rollout err / copy k=1', lambda m: m['B_predicted'].get('err_vs_copy', [float('nan')])[0]),
+             ('rollout err / copy k=K', lambda m: m['B_predicted'].get('err_vs_copy', [float('nan')])[-1]),
              ('R2 EE pos at k=K', lambda m: m['B_predicted']['r2']['ee_pos'][-1]),
              ('task acc at k=K', lambda m: m['B_predicted']['task_acc'][-1]),
              ('effective rank', lambda m: m['C_geometry']['effective_rank']),
@@ -152,11 +154,14 @@ def main():
     for i, (m, n) in enumerate(zip(Ms, names)):
         P = m['B_predicted']
         axes[0].plot(P['k'], P['rel_err'], 'o-', color=COLORS[i], label=n, ms=3)
+        if 'err_vs_copy' in P:
+            axes[0].plot(P['k'], P['err_vs_copy'], 's--', color=COLORS[i], ms=3)
         axes[1].plot(P['k'], P['r2']['ee_pos'], 'o-', color=COLORS[i], ms=3)
         axes[2].plot(P['k'], P['r2']['ee_rot'], 'o-', color=COLORS[i], ms=3)
         axes[3].plot(P['k'], P['task_acc'], 'o-', color=COLORS[i], ms=3)
     axes[0].set_yscale('log')
-    for ax, t in zip(axes, ['rollout MSE / latent variance', 'R$^2$ EE position from $\\hat z_{t+k}$',
+    axes[0].axhline(1, color='k', lw=0.6, ls=':')
+    for ax, t in zip(axes, ['rollout MSE / var (solid), / copy baseline (dashed)', 'R$^2$ EE position from $\\hat z_{t+k}$',
                             'R$^2$ EE rotation from $\\hat z_{t+k}$', 'task acc. from $\\hat z_{t+k}$']):
         ax.set_title(t, fontsize=9)
         ax.set_xlabel('k')

@@ -230,5 +230,8 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
             # MSE per element / variance per dimension: 1.0 = no better than predicting the mean
             var = z.reshape(-1, z.shape[-1]).var(0).mean()
             terms['rel_err_multi_step'] = terms['err_multi_step'] / var.clamp_min(1e-12)
+            # vs. the copy baseline zhat_{t+k} = z_t: < 1 means the predictor beats 'nothing changes'
+            err_copy = F.mse_loss(z[:, :1].expand_as(z[:, 1:]), z[:, 1:])
+            terms['err_vs_copy'] = terms['err_multi_step'] / err_copy.clamp_min(1e-12)
             terms['latent_std'] = z.reshape(-1, z.shape[-1]).std(0).mean()
     return total, {k: float(v.detach()) for k, v in terms.items()}, z

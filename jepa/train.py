@@ -236,7 +236,7 @@ def main():
         history.append(row)
         msg = (f'[{epoch:3d}/{epochs}] ' + ' '.join(f'{k}={v:.4g}' for k, v in train_terms.items())
                + ' | val ' + ' '.join(f'{k}={val_terms[k]:.4g}' for k in
-                                     ('total', 'err_one_step', 'err_multi_step', 'rel_err_multi_step', 'latent_std'))
+                                     ('total', 'err_one_step', 'err_multi_step', 'rel_err_multi_step', 'err_vs_copy', 'latent_std'))
                + (' | ' + ' '.join(f'{k}={v:.3f}' for k, v in row['probe'].items()) if 'probe' in row else '')
                + f' | {row["time"]:.0f}s')
         print(msg, flush=True)

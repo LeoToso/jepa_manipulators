@@ -93,9 +93,13 @@ def predicted(M, figs):
     axes[0].plot(k, P['rel_err'], 'o-', label='all')
     for fam, v in P['per_family_rel_err'].items():
         axes[0].plot(k, v, '--', label=fam)
+    if 'err_vs_copy' in P:
+        axes[0].plot(k, P['err_vs_copy'], 's-', color='k', label='vs copy baseline z_t')
+        axes[0].axhline(1, color='k', lw=0.6, ls=':')
+    axes[0].set_yscale('log')
     axes[0].set_xlabel('prediction horizon k (latent steps)')
-    axes[0].set_ylabel('MSE / latent variance')
-    axes[0].set_title('rollout error')
+    axes[0].set_ylabel('MSE / latent variance  |  MSE / copy MSE')
+    axes[0].set_title('rollout error (black: < 1 beats "nothing changes")', fontsize=9)
     axes[0].legend(fontsize=8)
     for i, q in enumerate(['ee_pos', 'ee_rot', 'gripper', 'progress']):
         axes[1].plot(k, P['r2'][q], 'o-', color=TASK_COLORS[i], label=LABELS[q])

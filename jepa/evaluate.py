@@ -271,13 +271,16 @@ def run(args):
     starts = te_frames[te_frames + K * ev.fs <= last][::args.rollout_stride]
     zhat = ev.rollout(zte[row_of[starts]], ev.action_chunks(starts, K))
     var = zte.var(0).mean()
-    P = {'k': list(range(1, K + 1)), 'rel_err': [], 'cos': [], 'task_acc': [], 'r2': {q: [] for q in QUANTITIES},
+    P = {'k': list(range(1, K + 1)), 'rel_err': [], 'err_vs_copy': [], 'cos': [], 'task_acc': [], 'r2': {q: [] for q in QUANTITIES},
          'r2_encoded_target': {q: [] for q in QUANTITIES}}
     task_probe = ridge_fit(ztr, np.eye(len(c.tasks))[ttr], args.ridge)
     for k in range(1, K + 1):
         tgt_frames = starts + k * ev.fs
         ztrue, zp = zte[row_of[tgt_frames]], zhat[:, k - 1]
         P['rel_err'].append(float(((zp - ztrue) ** 2).mean() / var))
+        # copy baseline zhat_{t+k} = z_t: < 1 means the predictor beats 'nothing changes'
+        P['err_vs_copy'].append(float(((zp - ztrue) ** 2).mean()
+                                      / max(((zte[row_of[starts]] - ztrue) ** 2).mean(), 1e-12)))
         P['cos'].append(float(np.mean(np.sum(zp * ztrue, 1) / (np.linalg.norm(zp, axis=1) * np.linalg.norm(ztrue, axis=1) + 1e-8))))
         P['task_acc'].append(float((task_probe(zp).argmax(1) == ev.task_of_frame[tgt_frames]).mean()))
         for q in QUANTITIES:
