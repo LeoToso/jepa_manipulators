@@ -293,7 +293,8 @@ def within_task_pca(M, pcs, phys, figs, rng, n=4000):
     W = M['C_within_task_pca']
     idx = rng.choice(len(pcs), min(n, len(pcs)), replace=False)
     names = list(phys)
-    fig, axes = plt.subplots(1, len(names) + 1, figsize=(3.6 * (len(names) + 1), 3.6))
+    fig, axes = plt.subplots(1, len(names) + 1, figsize=(4.2 * (len(names) + 1), 3.6))
+    fig.subplots_adjust(wspace=0.55)
     for ax, name in zip(axes, names):
         sc = ax.scatter(pcs[idx, 0], pcs[idx, 1], s=3, c=phys[name][idx], cmap='viridis')
         plt.colorbar(sc, ax=ax, fraction=0.046)
