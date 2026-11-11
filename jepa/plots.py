@@ -287,3 +287,54 @@ def patch_pca(images, tokens, names, figs):
             ax.axis('off')
     fig.suptitle('encoder patch tokens: first 3 principal components as RGB', fontsize=10)
     _save(fig, figs, 'patch_pca')
+
+
+def within_task_pca(M, pcs, phys, figs, rng, n=4000):
+    W = M['C_within_task_pca']
+    idx = rng.choice(len(pcs), min(n, len(pcs)), replace=False)
+    names = list(phys)
+    fig, axes = plt.subplots(1, len(names) + 1, figsize=(3.6 * (len(names) + 1), 3.6))
+    for ax, name in zip(axes, names):
+        sc = ax.scatter(pcs[idx, 0], pcs[idx, 1], s=3, c=phys[name][idx], cmap='viridis')
+        plt.colorbar(sc, ax=ax, fraction=0.046)
+        ax.set_title(f'{name}  (R$^2$ from PC1-3 = {W["r2_from_pc123"][name]:.2f})', fontsize=8)
+        ax.set_xlabel('within-task PC1')
+        ax.set_ylabel('within-task PC2')
+        ax.set_xticks([])
+        ax.set_yticks([])
+    ev = W['explained_variance']
+    axes[-1].bar(range(1, len(ev) + 1), ev)
+    axes[-1].set_xlabel('within-task PC')
+    axes[-1].set_title('explained variance', fontsize=9)
+    fig.suptitle(_title(M, 'task means removed: do the leading latent directions follow the robot\'s '
+                           'physical axes?'))
+    _save(fig, figs, 'within_task_pca')
+
+
+def successor(M, figs):
+    SF = M['SF']
+    fig, axes = plt.subplots(1, 3, figsize=(16, 3.8))
+    for i, (t, curve) in enumerate(SF['value_curves'].items()):
+        axes[0].plot(SF['grid'], curve, color=TASK_COLORS[i], label=t)
+    axes[0].set_xlabel('episode progress')
+    axes[0].set_ylabel('goal value <S(u, u_g), u_g> / d')
+    axes[0].set_title('value of the final frame along each episode (ideal: rising)', fontsize=9)
+    axes[0].legend(fontsize=7)
+    tasks = list(SF['value_spearman_mean'])
+    axes[1].bar(range(len(tasks)), [SF['value_spearman_mean'][t] for t in tasks], color=TASK_COLORS[:len(tasks)])
+    axes[1].set_xticks(range(len(tasks)), tasks, rotation=30, ha='right', fontsize=8)
+    axes[1].set_ylim(-1, 1)
+    axes[1].axhline(0, color='k', lw=.6)
+    axes[1].set_title('Spearman(value, time)')
+    P = SF['far_goal_planning']
+    keys = ['first_action_nmse', 'action_nmse', 'gripper_agree', 'gt_rank']
+    x = np.arange(len(keys))
+    for j, o in enumerate(('value', 'distance')):
+        axes[2].bar(x + (j - 0.5) * 0.4, [P[o][k] for k in keys], 0.4, label=f'{o} objective')
+    axes[2].set_xticks(x, ['1st action NMSE', 'action NMSE', 'gripper agree', 'P(random beats GT)'],
+                       rotation=15, fontsize=8)
+    axes[2].legend(fontsize=8)
+    axes[2].set_title(f'CEM over {P["rollout"]} steps towards a goal {P["goal_offset"]} steps ahead',
+                      fontsize=9)
+    fig.suptitle(_title(M, 'goal-conditioned successor features'))
+    _save(fig, figs, 'successor')

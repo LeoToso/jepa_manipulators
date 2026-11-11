@@ -21,6 +21,10 @@ episodes. Writes <out>/metrics.json and figures in <out>/figs/:
     analogies.png         z(B_0) + [z(A_T) - z(A_0)] -> nearest neighbour (GCB-style analogies)
  E  planning.png          offline CEM towards a recorded goal frame vs. the recorded actions
  F  patch_pca.png         first 3 PCs of the encoder's patch tokens as RGB (LeJEPA Fig. 14)
+    within_task_pca.png   task means removed, PCA: do latent directions follow EE x/y/z, rotation,
+                          gripper? (BeJEPA Fig. 4 style)
+ SF successor.png         (successor models) goal value along episodes, and planning towards far
+                          goals with the successor value vs. latent distance
 """
 from __future__ import annotations
 
@@ -168,7 +172,16 @@ def subspace_overlap(za, zb, k):
     return float(np.sum((ua.T @ ub) ** 2) / k)
 
 
-def cem_plan(model, z0, zg, horizon, action_dim, device, pop=300, elites=30, iters=10, seed=0):
+def _final_cost(model, zh, zg, objective):
+    if objective == 'distance':
+        return ((zh - zg) ** 2).sum(-1)
+    if objective == 'value':  # successor-feature goal value (BeJEPA): maximize <S(u, u_g), u_g>
+        return -model.goal_value(zh, zg.expand_as(zh))
+    raise ValueError(objective)
+
+
+def cem_plan(model, z0, zg, horizon, action_dim, device, pop=300, elites=30, iters=10, seed=0,
+             objective='distance'):
     g = torch.Generator(device='cpu').manual_seed(seed)
     z0 = torch.from_numpy(z0).to(device)[None]
     zg = torch.from_numpy(zg).to(device)[None]
@@ -178,17 +191,27 @@ def cem_plan(model, z0, zg, horizon, action_dim, device, pop=300, elites=30, ite
         cand = mu + sd * torch.randn(pop, horizon, action_dim, generator=g)
         with torch.no_grad():
             zh = model.rollout(z0.expand(pop, -1), cand.to(device))[:, -1]
-            cost = ((zh - zg) ** 2).sum(-1).cpu()
+            cost = _final_cost(model, zh, zg, objective).cpu()
         elite = cand[cost.argsort()[:elites]]
         mu, sd = elite.mean(0), elite.std(0) + 1e-3
     return mu.numpy()
 
 
 @torch.no_grad()
-def plan_cost(model, z0, zg, seqs, device):
+def plan_cost(model, z0, zg, seqs, device, objective='distance'):
     zh = model.rollout(torch.from_numpy(z0).to(device)[None].expand(len(seqs), -1),
                        torch.from_numpy(seqs).to(device))[:, -1]
-    return ((zh - torch.from_numpy(zg).to(device)[None]) ** 2).sum(-1).cpu().numpy()
+    return _final_cost(model, zh, torch.from_numpy(zg).to(device)[None], objective).cpu().numpy()
+
+
+@torch.no_grad()
+def goal_values(model, z, zg, device, bs=4096):
+    out = []
+    for i in range(0, len(z), bs):
+        zz = torch.from_numpy(z[i:i + bs]).to(device)
+        gg = torch.from_numpy(np.broadcast_to(zg, z[i:i + bs].shape).copy()).to(device)
+        out.append(model.goal_value(zz, gg).float().cpu())
+    return torch.cat(out).numpy()
 
 
 def run(args):
@@ -423,6 +446,66 @@ def run(args):
     M['E_planning'].update(horizon=Hp, trials=int(len(picks)),
                            note='action_nmse in normalized action units; 1.0 ~ predicting zero (the mean)')
 
+    # ---- within-task PCA (BeJEPA Fig. 4 style) ------------------------------------
+    # remove each task's mean latent, PCA on the rest: do the leading within-task directions
+    # line up with physical axes of the robot?
+    print('within-task PCA', flush=True)
+    zw = zte.copy()
+    for i in range(len(c.tasks)):
+        zw[tte == i] -= zte[tte == i].mean(0)
+    _, sv, vt = np.linalg.svd(zw - zw.mean(0), full_matrices=False)
+    pcs = zw @ vt[:3].T
+    phys = {'EE x': lab['ee_pos'][te_frames, 0], 'EE y': lab['ee_pos'][te_frames, 1],
+            'EE z': lab['ee_pos'][te_frames, 2], 'EE rot z': lab['ee_rot'][te_frames, 2],
+            'gripper': lab['gripper'][te_frames, 0]}
+    xp = np.concatenate([pcs, np.ones((len(pcs), 1))], 1)
+    M['C_within_task_pca'] = {
+        'explained_variance': (sv ** 2 / max((sv ** 2).sum(), 1e-12))[:10].tolist(),
+        'abs_corr_pc123': {n: [float(abs(np.corrcoef(pcs[:, j], y)[0, 1])) for j in range(3)]
+                           for n, y in phys.items()},
+        # descriptive: how much of each quantity the top-3 within-task directions carry
+        'r2_from_pc123': {n: float(r2_score(y[:, None], xp @ np.linalg.lstsq(xp, y, rcond=None)[0][:, None])[0])
+                          for n, y in phys.items()},
+    }
+
+    # ---- successor features (models with a successor predictor) -------------------
+    if model.successor is not None:
+        print('successor features: value along episodes and value-based planning', flush=True)
+        SF = {'value_spearman_per_task': {t: [] for t in c.tasks}, 'value_curves': {t: [] for t in c.tasks}}
+        for e in te_eps:
+            frames = np.arange(c.starts[e], c.starts[e] + c.lengths[e], ev.fs)
+            z_ep = zte[row_of[frames]]
+            v = goal_values(model, z_ep, z_ep[-1], ev.device)
+            t = c.tasks[c.episode_task[e]]
+            SF['value_spearman_per_task'][t].append(spearman(v[:-1], frames[:-1]))
+            SF['value_curves'][t].append(np.interp(grid, (frames - frames[0]) / max(frames[-1] - frames[0], 1),
+                                                   v).tolist())
+        SF['value_spearman_mean'] = {t: float(np.mean(x)) for t, x in SF['value_spearman_per_task'].items() if x}
+        SF['value_curves'] = {t: np.mean(x, axis=0).tolist() for t, x in SF['value_curves'].items() if x}
+        SF['grid'] = grid.tolist()
+        # far goals: plan Hs steps towards a frame Kg steps ahead, value vs distance objective
+        Kg, Hs = args.sf_goal_offset, args.sf_rollout
+        cand = te_frames[te_frames + Kg * ev.fs <= last]
+        res = {o: {'action_nmse': [], 'first_action_nmse': [], 'gripper_agree': [], 'gt_rank': []}
+               for o in ('value', 'distance')}
+        if len(cand):
+            for i, f in enumerate(rng.choice(cand, min(args.plan_trials, len(cand)), replace=False)):
+                z0, zg = zte[row_of[f]], zte[row_of[f + Kg * ev.fs]]
+                gt = ev.action_chunks(np.array([f]), Hs)[0]
+                rand = rng.randn(256, Hs, A_dim).astype(np.float32)
+                for o in res:
+                    plan = cem_plan(model, z0, zg, Hs, A_dim, ev.device, args.cem_pop, args.cem_elites,
+                                    args.cem_iters, seed=i, objective=o)
+                    costs = plan_cost(model, z0, zg, np.concatenate([gt[None], rand]), ev.device, o)
+                    res[o]['action_nmse'].append(float(((plan - gt) ** 2).mean()))
+                    res[o]['first_action_nmse'].append(float(((plan[0] - gt[0]) ** 2).mean()))
+                    res[o]['gripper_agree'].append(float((np.sign(plan[:, grip_cols]) == np.sign(gt[:, grip_cols])).mean()))
+                    res[o]['gt_rank'].append(float((costs[1:] < costs[0]).mean()))
+        SF['far_goal_planning'] = {o: {k: float(np.mean(v)) if v else float('nan') for k, v in d.items()}
+                                   for o, d in res.items()}
+        SF['far_goal_planning'].update(goal_offset=Kg, rollout=Hs)
+        M['SF'] = SF
+
     with open(os.path.join(args.out, 'metrics.json'), 'w') as fh:
         json.dump(M, fh, indent=1)
 
@@ -440,6 +523,9 @@ def run(args):
     plots.goal_distance(M, figs)
     plots.analogies(M, figs)
     plots.planning(M, figs)
+    plots.within_task_pca(M, pcs, phys, figs, rng)
+    if 'SF' in M:
+        plots.successor(M, figs)
     # patch PCA on one mid-episode frame per task
     frames = np.array([c.starts[eps_by_task[i][0]] + c.lengths[eps_by_task[i][0]] // 2
                        for i in range(len(c.tasks)) if eps_by_task[i]])
@@ -469,6 +555,9 @@ def main():
     p.add_argument('--cem-pop', type=int, default=300)
     p.add_argument('--cem-elites', type=int, default=30)
     p.add_argument('--cem-iters', type=int, default=10)
+    p.add_argument('--sf-goal-offset', type=int, default=15,
+                   help='successor models: latent steps to the far goal for value-based planning')
+    p.add_argument('--sf-rollout', type=int, default=3, help='successor models: planned latent steps')
     p.add_argument('--no-mlp', action='store_true', help='skip MLP probes (needs scikit-learn)')
     p.add_argument('--no-tsne', action='store_true', help='skip t-SNE (needs scikit-learn)')
     args = p.parse_args()

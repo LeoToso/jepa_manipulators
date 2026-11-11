@@ -103,6 +103,11 @@ def main():
              ('goal-distance Spearman', lambda m: float(np.mean(list(m['D_goal']['spearman_mean'].values())))),
              ('steps-to-goal R2', lambda m: m['D_goal'].get('steps_to_goal_r2', float('nan'))),
              ('analogy NN progress', lambda m: m['D_goal'].get('analogies', {}).get('same_task', {}).get('retrieved_progress', float('nan'))),
+             ('within-task PC1-3 R2 EE z', lambda m: m.get('C_within_task_pca', {}).get('r2_from_pc123', {}).get('EE z', float('nan'))),
+             ('within-task PC1-3 R2 EE rot z', lambda m: m.get('C_within_task_pca', {}).get('r2_from_pc123', {}).get('EE rot z', float('nan'))),
+             ('value Spearman (SF)', lambda m: float(np.mean(list(m['SF']['value_spearman_mean'].values()))) if 'SF' in m else float('nan')),
+             ('far-goal 1st NMSE, value (SF)', lambda m: m['SF']['far_goal_planning']['value']['first_action_nmse'] if 'SF' in m else float('nan')),
+             ('far-goal 1st NMSE, distance (SF)', lambda m: m['SF']['far_goal_planning']['distance']['first_action_nmse'] if 'SF' in m else float('nan')),
              ('CEM action NMSE', lambda m: m['E_planning']['action_nmse']),
              ('P(random < GT cost)', lambda m: m['E_planning']['gt_rank'])]
     table = [[fn(m) for _, fn in cols] for m in Ms]

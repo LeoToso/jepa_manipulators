@@ -16,6 +16,9 @@ Anti-collapse / structure terms:
              resampled every step. Applied to every latent in the window.
     EP-IDM   endpoint inverse dynamics (JEPA_control): the H normalized action
              chunks from (z_t, z_{t+H}) only, MSE.
+    SF       goal-conditioned successor features (BeJEPA): TD toward
+             sg[(1-gamma) u_t + gamma S_bar(u_{t+1}, u_g)] with an EMA target network,
+             u = sphere-projected latent, hindsight goals, absorbing at the goal.
     GCB      goal-conditioned bisimulation (Hansen-Estruch et al. 2022):
              L_phi = ( ||phi(s_i,g_i) - phi(s_j,g_j)||_1 - (1-gamma) |r_i - r_j|
                        - gamma ||phibar(s'_i,g_i) - phibar(s'_j,g_j)||_2 )^2     (Eq. 6 with
@@ -31,6 +34,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+
+from jepa.models import to_sphere
 
 
 def sigreg_lejepa(z, num_slices=256, t_max=3.0, knots=17):
@@ -152,16 +157,35 @@ def gcb_losses(model, x_s, x_next, x_goal, z_s, z_goal, r, binary_reward, gamma=
     return l_phi, l_psi, l_rew
 
 
-def compute_losses(model, batch, tc, device, with_diagnostics=False):
-    """Total loss and a dict of its terms (floats) for one batch."""
+def successor_loss(model, target_net, z_t, z_next, z_goal, goal_offset, gamma=0.95):
+    """TD loss for goal-conditioned successor features (BeJEPA, Eqs. 8-9) with hindsight goals.
+
+    target = sg[(1 - gamma) u_t + gamma S_bar(u_{t+1}, u_g)], and when s_{t+1} is the goal
+    (k = 1) the goal is absorbing, S(g, g) = u_g, so the target is (1 - gamma) u_t + gamma u_g.
+    Gradients reach the encoder through the prediction's inputs (u_t, u_g), as in BeJEPA.
+    """
+    u_t, u_n, u_g = to_sphere(z_t), to_sphere(z_next), to_sphere(z_goal)
+    pred = model.successor(u_t, u_g)
+    with torch.no_grad():
+        nxt = target_net(u_n.detach(), u_g.detach())
+        reached = (goal_offset == 1).float()[:, None]
+        nxt = reached * u_g.detach() + (1 - reached) * nxt
+        target = (1 - gamma) * u_t.detach() + gamma * nxt
+    return F.mse_loss(pred, target)
+
+
+def compute_losses(model, batch, tc, device, with_diagnostics=False, sf_target=None):
+    """Total loss and a dict of its terms (floats) for one batch. sf_target: EMA copy of the
+    successor predictor for the TD target (defaults to the online one, e.g. in validation)."""
     obs = batch['obs'].to(device, non_blocking=True)
     prev = batch['prev_obs'].to(device, non_blocking=True)
     actions = batch['actions'].to(device, non_blocking=True).float()
     proprio = batch['proprio'].to(device, non_blocking=True) if model.use_proprio else None
     use_gcb = model.gcb is not None and any(float(tc.get(k, 0.0)) > 0 for k in
                                             ('lambda_gcb_phi', 'lambda_gcb_psi', 'lambda_gcb_reward'))
+    use_sf = model.successor is not None and float(tc.get('lambda_sf', 0.0)) > 0
     b, t = obs.shape[:2]
-    if use_gcb:
+    if use_gcb or use_sf:
         # Goals go through the encoder in the same forward pass as the window: in train mode
         # BatchNorm uses per-call statistics, so a separate call would give the same frame a
         # different latent and break both r = 1[s' = g] and the phi(g, g) anchor.
@@ -219,6 +243,12 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False):
                  + float(tc.get('lambda_gcb_psi', 1.0)) * l_psi
                  + float(tc.get('lambda_gcb_reward', 1.0)) * l_rew)
         terms.update(gcb_phi=l_phi, gcb_psi=l_psi, gcb_reward=l_rew)
+
+    if use_sf:
+        l_sf = successor_loss(model, sf_target or model.successor, z[:, 0], z[:, 1], z_goal,
+                              batch['goal_offset'].to(device), float(tc.get('sf_gamma', 0.95)))
+        total = total + float(tc['lambda_sf']) * l_sf
+        terms['sf'] = l_sf
 
     terms['total'] = total
     if with_diagnostics:  # both prediction errors for every model, comparable across objectives

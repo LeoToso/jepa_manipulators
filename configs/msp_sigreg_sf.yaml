@@ -1,0 +1,14 @@
+# MSP+SIG+SF: MSP+SIG plus goal-conditioned successor features (BeJEPA, ICLR 2027 submission).
+# A successor predictor S(u_t, u_g) ~ (1-gamma) sum_k gamma^k u_{t+k} on the sphere-projected
+# latent u is trained by TD with an EMA target network and hindsight goals (absorbing at the
+# goal); its gradients shape the encoder. Reward-free by construction: r_g(s) = <u, u_g>,
+# goal value V_g = <S(u, u_g), u_g>. Same SIGReg as msp_sigreg.yaml, so the run isolates what
+# successor features add.
+inherit: msp_sigreg.yaml
+model:
+  use_successor: true
+  sf_hidden_dim: 1024
+training:
+  lambda_sf: 1.0
+  sf_gamma: 0.95          # horizon ~20 latent steps (4 s); hindsight goals reach up to 30 steps
+  sf_target_tau: 0.005    # EMA rate of the target network

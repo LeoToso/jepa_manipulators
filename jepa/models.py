@@ -187,6 +187,26 @@ class GCBHeads(nn.Module):
         return self.phi(torch.cat([f_s, f_g, f_g - f_s], dim=-1))
 
 
+def to_sphere(z):
+    """Project latents onto the sphere of radius sqrt(d) (BeJEPA, Sec. 3.2)."""
+    return F.normalize(z, dim=-1) * z.shape[-1] ** 0.5
+
+
+class SuccessorPredictor(nn.Module):
+    """Goal-conditioned successor features (BeJEPA, Eq. 3): S(u_t, u_g) ~ (1 - gamma) sum_k gamma^k
+    u_{t+k}, the discounted average of the future (sphere-projected) latents while pursuing g.
+    With the linear reward r_g(s) = <u, u_g>, the goal value is V_g(s) = <S(u, u_g), u_g>."""
+
+    def __init__(self, latent_dim=192, hidden_dim=1024):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(2 * latent_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(),
+                                 nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(),
+                                 nn.Linear(hidden_dim, latent_dim))
+
+    def forward(self, u, u_goal):
+        return self.net(torch.cat([u, u_goal], dim=-1))
+
+
 class WorldModel(nn.Module):
     """encode(obs, prev) -> z;  step(z, a) -> z';  rollout(z0, a_1..H) -> z_1..H."""
 
@@ -215,6 +235,8 @@ class WorldModel(nn.Module):
             d, self.action_dim, int(cfg.get('inverse_hidden_dim', 256)),
             int(cfg.get('endpoint_inverse_horizon', 3)))
             if cfg.get('use_endpoint_inverse', False) else None)
+        self.successor = (SuccessorPredictor(d, int(cfg.get('sf_hidden_dim', 1024)))
+                          if cfg.get('use_successor', False) else None)
         self.gcb = (GCBHeads(dict(enc_kwargs, depth=int(cfg.get('gcb_vit_depth', enc_kwargs['depth']))),
                              d, int(cfg.get('gcb_hidden_dim', 512)))
                     if cfg.get('use_gcb', False) else None)
@@ -248,6 +270,11 @@ class WorldModel(nn.Module):
         b, t, _ = actions.shape
         a = self.action_encoder(actions.reshape(b * t, -1)).reshape(b, t, -1)
         return self.predictor(z, a)
+
+    def goal_value(self, z, z_goal):
+        """Normalized goal value V_g = <S(u, u_g), u_g> / d (1 = already at the goal)."""
+        u, ug = to_sphere(z), to_sphere(z_goal)
+        return (self.successor(u, ug) * ug).sum(-1) / z.shape[-1]
 
     def step(self, z, a):
         """Markov one-step prediction: (B, d), (B, A) -> (B, d)."""

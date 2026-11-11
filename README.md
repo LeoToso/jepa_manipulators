@@ -44,6 +44,7 @@ They differ only in the objective:
 | `1sp_gcb` | one-step | goal-conditioned bisimulation (reward-free) |
 | `msp_gcb` | multi-step | goal-conditioned bisimulation (reward-free) |
 | `msp_gcb_sigreg` | multi-step | GCB + SIGReg (GCB alone collapsed to ~2 effective dimensions) |
+| `msp_sigreg_sf` | multi-step | SIGReg + goal-conditioned successor features (BeJEPA) |
 
 - **Architecture:** identical to [JEPA_control](https://github.com/LeoToso/JEPA_control).
   JEPA_control's encoder, predictor, action embedder and EP-IDM load into these modules with
@@ -113,6 +114,16 @@ They differ only in the objective:
 
     GCB is the experimental arm. Watch `latent_std` and `rel_err_multi_step` in the training log,
     and tune `gcb_gamma`, `gcb_reward_scale` and `lambda_gcb_psi` with `--set`.
+- **SF** (successor features, after BeJEPA, ICLR 2027 submission):
+  - A successor predictor S(u_t, u_g) ≈ (1−γ) Σ_k γ^k u_{t+k}, where u = √d · z/‖z‖ is the
+    sphere-projected JEPA latent.
+  - Trained by TD toward `sg[(1−γ) u_t + γ S̄(u_{t+1}, u_g)]`, with an EMA target network
+    (τ = 0.005) and γ = 0.95.
+  - Hindsight goals as for GCB; the goal is absorbing, S(g, g) = u_g. Gradients reach the encoder
+    through the prediction's inputs.
+  - Reward-free by construction: r_g(s) = ⟨u, u_g⟩ and the goal value is V_g = ⟨S(u, u_g), u_g⟩.
+  - Evaluation adds value monotonicity along episodes, and CEM toward far goals with the value
+    objective vs. latent distance.
 - **BatchNorm:** running statistics are recomputed at the end of every epoch ("precise BN").
   Without this, the eval-mode encoder drifts far from the train-mode one (the pre-BN mean
   is invisible to every loss), and validation, probes and planning break.

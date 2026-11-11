@@ -56,7 +56,7 @@ def make_loaders(cache, cfg, batch_size, num_workers, seed):
         pstats = proprio_stats(cache, mc['proprio_keys'], train_eps)
         mc['proprio_dim'] = int(len(pstats['mean']))
     common = dict(horizon=dc['horizon'], frame_skip=dc['frame_skip'], action_mode=dc['action_mode'],
-                  stats=stats, return_goal=bool(mc.get('use_gcb', False)),
+                  stats=stats, return_goal=bool(mc.get('use_gcb', False) or mc.get('use_successor', False)),
                   goal_geom_p=dc.get('goal_geom_p', 0.3), goal_max_offset=dc.get('goal_max_offset', 30),
                   tasks=tasks, proprio=pstats)
     train = WindowDataset(cache, 'train', start_stride=dc.get('start_stride', 1), seed=seed, **common)
@@ -94,7 +94,7 @@ def quick_probe(model, train_loader, val_loader, cache, device, max_batches=40):
 
 
 @torch.no_grad()
-def recalibrate_bn(model, loader, tc, device, n_batches=50, use_amp=False):
+def recalibrate_bn(model, loader, tc, device, n_batches=50, use_amp=False, sf_target=None):
     """Recompute BatchNorm running statistics with the current weights ("precise BN").
 
     The pre-BN mean of the encoder/predictor projectors is invisible to every loss in
@@ -111,7 +111,7 @@ def recalibrate_bn(model, loader, tc, device, n_batches=50, use_amp=False):
         if i >= n_batches:
             break
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp):
-            compute_losses(model, batch, tc, device)
+            compute_losses(model, batch, tc, device, sf_target=sf_target)
     for bn, mom in zip(bns, momenta):
         bn.momentum = mom
     model.eval()
@@ -171,6 +171,13 @@ def main():
     print(f'[model] {n_params / 1e6:.2f}M params, prediction={tc["prediction"]}, '
           + ', '.join(f'{k}={tc[k]}' for k in sorted(tc) if k.startswith('lambda_') and float(tc[k]) > 0))
 
+    # EMA target network for the successor TD target (BeJEPA): not a submodule of the model, so it
+    # gets no gradients and no weight decay.
+    sf_target = None
+    if model.successor is not None:
+        sf_target = copy.deepcopy(model.successor).requires_grad_(False)
+    sf_tau = float(tc.get('sf_target_tau', 0.005))
+
     opt = torch.optim.AdamW([q for q in model.parameters() if q.requires_grad], lr=float(tc['lr']),
                             weight_decay=float(tc.get('weight_decay', 1e-3)))
     epochs = int(tc['epochs'])
@@ -192,6 +199,8 @@ def main():
         model.load_state_dict(ck['model'])
         opt.load_state_dict(ck['optimizer'])
         sched.load_state_dict(ck['scheduler'])
+        if sf_target is not None and ck.get('sf_target') is not None:
+            sf_target.load_state_dict(ck['sf_target'])
         start_epoch, best_val, history = ck['epoch'] + 1, ck['best_val'], ck['history']
         print(f'[resume] from epoch {ck["epoch"]}')
 
@@ -205,11 +214,15 @@ def main():
             if it >= steps_per_epoch:
                 break
             with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp):
-                loss, terms, _ = compute_losses(model, batch, tc, device)
+                loss, terms, _ = compute_losses(model, batch, tc, device, sf_target=sf_target)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), float(tc.get('grad_clip', 1.0)))
             opt.step()
+            if sf_target is not None:
+                with torch.no_grad():
+                    for pt, po in zip(sf_target.parameters(), model.successor.parameters()):
+                        pt.mul_(1 - sf_tau).add_(po, alpha=sf_tau)
             sched.step()
             if not math.isfinite(terms['total']):
                 raise RuntimeError(f'non-finite loss at epoch {epoch} iter {it}: {terms}')
@@ -217,7 +230,8 @@ def main():
                 sums[k] = sums.get(k, 0.0) + v
             count += 1
         train_terms = {k: v / count for k, v in sums.items()}
-        recalibrate_bn(model, train_loader, tc, device, int(tc.get('bn_recalib_batches', 50)), use_amp)
+        recalibrate_bn(model, train_loader, tc, device, int(tc.get('bn_recalib_batches', 50)), use_amp,
+                       sf_target)
 
         model.eval()
         vsums, vcount = {}, 0
@@ -252,12 +266,13 @@ def main():
         if epoch % int(tc.get('checkpoint_every', 10)) == 0:
             torch.save(ckpt, os.path.join(args.save_dir, 'checkpoints', f'epoch{epoch:04d}.pt'))
         torch.save(dict(ckpt, optimizer=opt.state_dict(), scheduler=sched.state_dict(),
-                        best_val=best_val, history=history), last_path)
+                        best_val=best_val, history=history,
+                        sf_target=None if sf_target is None else sf_target.state_dict()), last_path)
         with open(os.path.join(args.save_dir, 'history.json'), 'w') as fh:
             json.dump(history, fh, indent=1)
     final = torch_load(last_path, 'cpu')
-    for key in ('optimizer', 'scheduler', 'best_val', 'history'):
-        final.pop(key)
+    for key in ('optimizer', 'scheduler', 'best_val', 'history', 'sf_target'):
+        final.pop(key, None)
     torch.save(final, os.path.join(args.save_dir, 'model_final.pt'))
     print(f'[done] {os.path.join(args.save_dir, "model_final.pt")}')
 
