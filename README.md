@@ -43,6 +43,7 @@ They differ only in the objective:
 | `msp_epidm` | multi-step | EP-IDM |
 | `1sp_gcb` | one-step | goal-conditioned bisimulation (reward-free) |
 | `msp_gcb` | multi-step | goal-conditioned bisimulation (reward-free) |
+| `msp_gcb_sigreg` | multi-step | GCB + SIGReg (GCB alone collapsed to ~2 effective dimensions) |
 
 - **Architecture:** identical to [JEPA_control](https://github.com/LeoToso/JEPA_control).
   JEPA_control's encoder, predictor, action embedder and EP-IDM load into these modules with

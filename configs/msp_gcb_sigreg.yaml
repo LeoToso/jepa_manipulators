@@ -1,0 +1,9 @@
+# MSP+GCB+SIG: MSP+GCB plus SIGReg against dimensional collapse. GCB constrains only differences
+# between state-goal pairs and can be satisfied in a few latent directions (MSP+GCB on the real
+# data: effective rank 2.3 vs 17.9 for MSP+SIG); SIGReg pushes every direction to unit variance.
+# Same SIGReg as msp_sigreg.yaml, so this run isolates what GCB adds to MSP+SIG.
+inherit: msp_gcb.yaml
+training:
+  lambda_sigreg: 1.0
+  sigreg_impl: jepa_control
+  sigreg_num_slices: 128
