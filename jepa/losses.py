@@ -93,8 +93,8 @@ def gcb_reward(kind, goal_offset, next_state=None, goal_state=None, z_next=None,
                     so it cannot tell tasks, objects or motions apart.
     state_distance  -(|p' - p_g| / s_p + angle(q', q_g) / s_q + |grip' - grip_g| / s_g) / 3 from
                     measured EE pose and gripper (no task reward; dense; rotation enters directly).
-    latent_distance -mean |zbar' - zbar_g| with the (stop-gradient) JEPA latent: purely
-                    self-supervised but self-referential.
+    latent_distance -mean |ubar' - ubar_g| with u the sphere-projected (stop-gradient) JEPA
+                    latent: purely self-supervised; the projection keeps it scale-free.
     """
     if kind == 'indicator':
         return (goal_offset == 1).float()
@@ -106,7 +106,10 @@ def gcb_reward(kind, goal_offset, next_state=None, goal_state=None, z_next=None,
         sp, sq, sg = state_scales
         return -(dpos / sp + drot / sq + dgrip / sg) / 3
     if kind == 'latent_distance':
-        return -(z_next.detach() - z_goal.detach()).abs().mean(-1)
+        # on the sphere-projected latent: bounded and independent of the latent's scale. On the
+        # raw latent, a larger z gave larger rewards -> larger metric -> (analogy loss) larger z:
+        # latent std grew to ~12 on the real data with all GCB terms rising.
+        return -(to_sphere(z_next.detach()) - to_sphere(z_goal.detach())).abs().mean(-1)
     raise ValueError(f'gcb_reward must be indicator, state_distance or latent_distance, got {kind!r}')
 
 
