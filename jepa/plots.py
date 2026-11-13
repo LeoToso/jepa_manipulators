@@ -79,6 +79,7 @@ def family_probes(M, figs):
             ax.bar(x + (i - (len(fams) - 1) / 2) * w, [B[f + suffix][q] for q in qs], w, label=f)
         ax.set_xticks(x, [LABELS[q] for q in qs], rotation=20, ha='right')
         ax.axhline(0, color='k', lw=0.6)
+        ax.set_ylim(-0.5, 1.02)  # R^2 is unbounded below; bars under -0.5 are clipped
         ax.set_title(title, fontsize=10)
         ax.legend(fontsize=8)
     axes[0].set_ylabel('test R$^2$ within family')

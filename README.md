@@ -179,6 +179,9 @@ Figures go to `eval/<model>/figs/`; every number is in `eval/<model>/metrics.jso
 | E | Is it usable for planning? | Offline CEM towards the frame 5 latent steps ahead, compared with the recorded actions; probability that random action sequences score lower than the recorded one |
 | F | What does the encoder look at? | First 3 principal components of the patch tokens as RGB (LeJEPA Fig. 14) |
 
+`jepa.report` collects the summary table and every figure of every model into one self-contained
+HTML page (analyses as rows, models as columns), to open in a browser.
+
 `jepa.compare` puts all models on the same axes (`cmp_*.png`), writes `summary.md` / `summary.csv`,
 and plots training loss vs. probe accuracy over epochs (LeJEPA Fig. 1).
 
