@@ -84,9 +84,13 @@ def moving_mask(gt_now, gt_later, thresh=0.06, dilate=5):
 
 
 def masked_psnr(a, b, mask):
+    """Per-image PSNR over the masked pixels (callers drop images with an empty mask)."""
     w = mask.expand_as(a)
     mse = (((a - b) ** 2) * w).flatten(1).sum(1) / w.flatten(1).sum(1).clamp_min(1.0)
     return 10 * torch.log10(1.0 / mse.clamp_min(1e-10))
+
+
+MIN_MOVING_PIXELS = 30  # images where fewer pixels move are left out of the moving-pixel PSNR
 
 
 def frames_tensor(cache, idx):
@@ -155,19 +159,23 @@ def evaluate_decoder(ev, dec, out, K, n_starts, seed, gif_steps):
     copy_img = D(z0)
     keys = ['pred_vs_gt', 'recon_vs_gt', 'copy_vs_gt', 'pred_vs_recon']
     M = {'k': list(range(1, K + 1)), 'psnr': {k: [] for k in keys}, 'ssim': {k: [] for k in keys},
-         'psnr_moving': {k: [] for k in keys}, 'moving_fraction': []}
+         'psnr_moving': {k: [] for k in keys}, 'moving_fraction': [], 'moving_images': []}
     gt0 = frames_tensor(c, starts)
     for k in range(1, K + 1):
         tgt = starts + k * ev.fs
         gt = frames_tensor(c, tgt)
         mask = moving_mask(gt0, gt)
         M['moving_fraction'].append(float(mask.mean()))
+        # an empty mask (robot and object still) would score as a perfect 100 dB: leave it out
+        valid = mask.flatten(1).sum(1) >= MIN_MOVING_PIXELS
+        M['moving_images'].append(int(valid.sum()))
         recon = D(ev.encode(tgt))
         pred = D(zhat[:, k - 1])
         for key, (a, b) in zip(keys, ((pred, gt), (recon, gt), (copy_img, gt), (pred, recon))):
             M['psnr'][key].append(float(psnr(a, b).mean()))
             M['ssim'][key].append(float(ssim(a, b).mean()))
-            M['psnr_moving'][key].append(float(masked_psnr(a, b, mask).mean()))
+            M['psnr_moving'][key].append(float(masked_psnr(a[valid], b[valid], mask[valid]).mean())
+                                         if valid.any() else float('nan'))
     M['n_starts'], M['frame_skip'] = int(len(starts)), ev.fs
     with open(os.path.join(out, 'decoder_metrics.json'), 'w') as fh:
         json.dump(M, fh, indent=1)
