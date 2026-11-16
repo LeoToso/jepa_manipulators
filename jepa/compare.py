@@ -119,6 +119,19 @@ def main():
         if os.path.exists(dpath):
             with open(dpath) as fh:
                 m['decoder'] = json.load(fh)
+        spath = os.path.join(d, 'state_decoder', 'state_decoder_metrics.json')
+        if os.path.exists(spath):
+            with open(spath) as fh:
+                m['state_decoder'] = json.load(fh)
+    st = lambda src, q, i: (lambda m: m['state_decoder']['error']['all'][src][q][i] if 'state_decoder' in m else float('nan'))
+    cols += [('state: EE pos err [cm] pred k=1', st('pred', 'ee_pos_cm', 0)),
+             ('state: EE pos err [cm] pred k=K', st('pred', 'ee_pos_cm', -1)),
+             ('state: EE pos err [cm] recon', st('recon', 'ee_pos_cm', -1)),
+             ('state: EE pos err [cm] no-move k=K', st('copy', 'ee_pos_cm', -1)),
+             ('state: EE rot err [deg] pred k=K', st('pred', 'ee_rot_deg', -1)),
+             ('state: EE rot err [deg] no-move k=K', st('copy', 'ee_rot_deg', -1)),
+             ('state: gripper err pred k=K', st('pred', 'gripper', -1)),
+             ('state: gripper err no-move k=K', st('copy', 'gripper', -1))]
     dec = lambda metric, key, i: (lambda m: m['decoder'][metric][key][i] if 'decoder' in m else float('nan'))
     cols += [('decoded PSNR moving px, pred k=1', dec('psnr_moving', 'pred_vs_gt', 0)),
              ('decoded PSNR moving px, pred k=K', dec('psnr_moving', 'pred_vs_gt', -1)),

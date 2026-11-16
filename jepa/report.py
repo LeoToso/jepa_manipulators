@@ -47,10 +47,17 @@ SECTIONS = [  # (figure name, title, what to look for)
     ('planning', 'E. Offline CEM planning',
      'P(random beats recorded) near 0 = a good cost landscape; action NMSE = how close CEM gets to the demo.'),
     ('patch_pca', 'F. What the encoder looks at', 'First 3 principal components of the patch tokens as RGB.'),
-    ('decoder/decoder_error_vs_k', 'G. Decoded predictions vs ground truth',
+    ('state_decoder/state_error_vs_k', 'G. Decoded robot state of predictions',
+     'MLP decoder z -> EE position / rotation, gripper, joints, trained on frozen latents. Errors of '
+     'k-step predictions in physical units, vs the decoder limit and "robot does not move".'),
+] + [(f'state_decoder/state_rollout_{t}', f'G. Robot-state rollout: {t}', 'Measured vs decoded EE trajectory, '
+      'open loop with the recorded actions from the episode start.')
+     for t in ('pick_and_place_banana', 'pick_and_place_chips', 'pick_and_place_orange',
+               'rotate_banana', 'rotate_chips', 'rotate_orange')] + [
+    ('decoder/decoder_error_vs_k', 'H. Decoded images of predictions vs ground truth',
      'Pixel decoder trained on frozen latents. Right panel: only pixels that move between t and t+k. '
      'Prediction should beat "nothing changes" and approach the reconstruction (the decoder\'s limit).'),
-] + [(f'decoder/rollout_{t}', f'G. Decoded rollout: {t}', 'Rows: ground truth, reconstruction '
+] + [(f'decoder/rollout_{t}', f'H. Decoded image rollout: {t}', 'Rows: ground truth, reconstruction '
       '(decode(encode(GT))), prediction (decode(zhat)), open loop with the recorded actions.')
      for t in ('pick_and_place_banana', 'pick_and_place_chips', 'pick_and_place_orange',
                'rotate_banana', 'rotate_chips', 'rotate_orange')]
@@ -79,8 +86,11 @@ def _table(md_path):
 
 
 def _fig_path(d, fig):
-    """Evaluation figures live in <eval>/figs/, decoder figures in <eval>/decoder/."""
-    return os.path.join(d, fig + '.png') if fig.startswith('decoder/') else os.path.join(d, 'figs', fig + '.png')
+    """Evaluation figures live in <eval>/figs/, decoder figures in <eval>/decoder/ and
+    <eval>/state_decoder/."""
+    if fig.startswith(('decoder/', 'state_decoder/')):
+        return os.path.join(d, fig + '.png')
+    return os.path.join(d, 'figs', fig + '.png')
 
 
 def main():
@@ -110,7 +120,7 @@ def main():
              'td,th{border-color:#333}p.note{color:#aaa}img{background:#fff}}',
              '</style></head><body>',
              f'<h1>JEPA latent-space report: {", ".join(html.escape(n) for n in names)}</h1>']
-    nav = ['<nav>', '<a href="#summary">summary</a>'] + [f'<a href="#{s[0].replace("/", "_")}">{html.escape(s[1])}</a>' for s in SECTIONS if not s[0].startswith('decoder/rollout')] + ['</nav>']
+    nav = ['<nav>', '<a href="#summary">summary</a>'] + [f'<a href="#{s[0].replace("/", "_")}">{html.escape(s[1])}</a>' for s in SECTIONS if 'rollout' not in s[0]] + ['</nav>']
     parts += nav
     if a.compare:
         parts.append('<h2 id="summary">Summary table</h2>')

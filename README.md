@@ -179,6 +179,11 @@ Figures go to `eval/<model>/figs/`; every number is in `eval/<model>/metrics.jso
 | E | Is it usable for planning? | Offline CEM towards the frame 5 latent steps ahead, compared with the recorded actions; probability that random action sequences score lower than the recorded one |
 | F | What does the encoder look at? | First 3 principal components of the patch tokens as RGB (LeJEPA Fig. 14) |
 
+`jepa.state_decode` trains an MLP from frozen latents to robot state (EE position and rotation,
+gripper, joints). It decodes the world model's k-step predictions and reports errors in cm and
+degrees, against the decoder's limit and a "robot does not move" baseline. `jepa.decode` does the
+same with images, the only check that the object is predicted (the dataset has no object labels).
+
 `jepa.report` collects the summary table and every figure of every model into one self-contained
 HTML page (analyses as rows, models as columns), to open in a browser.
 
