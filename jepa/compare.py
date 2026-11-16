@@ -103,6 +103,10 @@ def main():
              ('goal-distance Spearman', lambda m: float(np.mean(list(m['D_goal']['spearman_mean'].values())))),
              ('steps-to-goal R2', lambda m: m['D_goal'].get('steps_to_goal_r2', float('nan'))),
              ('analogy NN progress', lambda m: m['D_goal'].get('analogies', {}).get('same_task', {}).get('retrieved_progress', float('nan'))),
+             ('task silhouette', lambda m: m.get('C_organization', {}).get('task_silhouette', float('nan'))),
+             ('object silhouette', lambda m: m.get('C_organization', {}).get('object_silhouette', float('nan'))),
+             ('latent~physical distance (Spearman)', lambda m: m.get('C_organization', {}).get('latent_physical_distance_spearman', float('nan'))),
+             ('family balance (pos+rot R2)', lambda m: m.get('C_organization', {}).get('family_balance', float('nan'))),
              ('within-task PC1-3 R2 EE z', lambda m: m.get('C_within_task_pca', {}).get('r2_from_pc123', {}).get('EE z', float('nan'))),
              ('within-task PC1-3 R2 EE rot z', lambda m: m.get('C_within_task_pca', {}).get('r2_from_pc123', {}).get('EE rot z', float('nan'))),
              ('value Spearman (SF)', lambda m: float(np.mean(list(m['SF']['value_spearman_mean'].values()))) if 'SF' in m else float('nan')),
@@ -110,6 +114,16 @@ def main():
              ('far-goal 1st NMSE, distance (SF)', lambda m: m['SF']['far_goal_planning']['distance']['first_action_nmse'] if 'SF' in m else float('nan')),
              ('CEM action NMSE', lambda m: m['E_planning']['action_nmse']),
              ('P(random < GT cost)', lambda m: m['E_planning']['gt_rank'])]
+    for m, d in zip(Ms, [d for d in a.evals if os.path.exists(os.path.join(d, 'metrics.json'))]):
+        dpath = os.path.join(d, 'decoder', 'decoder_metrics.json')
+        if os.path.exists(dpath):
+            with open(dpath) as fh:
+                m['decoder'] = json.load(fh)
+    dec = lambda metric, key, i: (lambda m: m['decoder'][metric][key][i] if 'decoder' in m else float('nan'))
+    cols += [('decoded PSNR moving px, pred k=1', dec('psnr_moving', 'pred_vs_gt', 0)),
+             ('decoded PSNR moving px, pred k=K', dec('psnr_moving', 'pred_vs_gt', -1)),
+             ('decoded PSNR moving px, recon', dec('psnr_moving', 'recon_vs_gt', -1)),
+             ('decoded PSNR moving px, copy k=K', dec('psnr_moving', 'copy_vs_gt', -1))]
     table = [[fn(m) for _, fn in cols] for m in Ms]
     with open(os.path.join(a.out, 'summary.csv'), 'w') as fh:
         fh.write('model,' + ','.join(c for c, _ in cols) + '\n')

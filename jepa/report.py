@@ -47,7 +47,13 @@ SECTIONS = [  # (figure name, title, what to look for)
     ('planning', 'E. Offline CEM planning',
      'P(random beats recorded) near 0 = a good cost landscape; action NMSE = how close CEM gets to the demo.'),
     ('patch_pca', 'F. What the encoder looks at', 'First 3 principal components of the patch tokens as RGB.'),
-]
+    ('decoder/decoder_error_vs_k', 'G. Decoded predictions vs ground truth',
+     'Pixel decoder trained on frozen latents. Right panel: only pixels that move between t and t+k. '
+     'Prediction should beat "nothing changes" and approach the reconstruction (the decoder\'s limit).'),
+] + [(f'decoder/rollout_{t}', f'G. Decoded rollout: {t}', 'Rows: ground truth, reconstruction '
+      '(decode(encode(GT))), prediction (decode(zhat)), open loop with the recorded actions.')
+     for t in ('pick_and_place_banana', 'pick_and_place_chips', 'pick_and_place_orange',
+               'rotate_banana', 'rotate_chips', 'rotate_orange')]
 
 COMPARE_FIGS = ['cmp_probes', 'cmp_position_vs_rotation', 'cmp_predicted', 'cmp_geometry',
                 'cmp_temporal', 'cmp_goal', 'cmp_planning', 'cmp_training', 'cmp_loss_vs_probe']
@@ -70,6 +76,11 @@ def _table(md_path):
     for r in body:
         out.append('<tr>' + ''.join(f'<td>{html.escape(c.strip())}</td>' for c in r) + '</tr>')
     return ''.join(out) + '</tbody></table>'
+
+
+def _fig_path(d, fig):
+    """Evaluation figures live in <eval>/figs/, decoder figures in <eval>/decoder/."""
+    return os.path.join(d, fig + '.png') if fig.startswith('decoder/') else os.path.join(d, 'figs', fig + '.png')
 
 
 def main():
@@ -99,7 +110,7 @@ def main():
              'td,th{border-color:#333}p.note{color:#aaa}img{background:#fff}}',
              '</style></head><body>',
              f'<h1>JEPA latent-space report: {", ".join(html.escape(n) for n in names)}</h1>']
-    nav = ['<nav>', '<a href="#summary">summary</a>'] + [f'<a href="#{s[0]}">{html.escape(s[1])}</a>' for s in SECTIONS] + ['</nav>']
+    nav = ['<nav>', '<a href="#summary">summary</a>'] + [f'<a href="#{s[0].replace("/", "_")}">{html.escape(s[1])}</a>' for s in SECTIONS if not s[0].startswith('decoder/rollout')] + ['</nav>']
     parts += nav
     if a.compare:
         parts.append('<h2 id="summary">Summary table</h2>')
@@ -110,11 +121,11 @@ def main():
             if os.path.exists(path):
                 parts.append(f'<div class="wide"><h3>{f}</h3>{_img(path)}</div>')
     for fig, title, note in SECTIONS:
-        if not any(os.path.exists(os.path.join(d, 'figs', fig + '.png')) for d in evals):
+        if not any(os.path.exists(_fig_path(d, fig)) for d in evals):
             continue
-        parts.append(f'<h2 id="{fig}">{html.escape(title)}</h2><p class="note">{html.escape(note)}</p><div class="row">')
+        parts.append(f'<h2 id="{fig.replace("/", "_")}">{html.escape(title)}</h2><p class="note">{html.escape(note)}</p><div class="row">')
         for d, n in zip(evals, names):
-            parts.append(f'<div class="cell"><h3>{html.escape(n)}</h3>{_img(os.path.join(d, "figs", fig + ".png"))}</div>')
+            parts.append(f'<div class="cell"><h3>{html.escape(n)}</h3>{_img(_fig_path(d, fig))}</div>')
         parts.append('</div>')
     parts.append('</body></html>')
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

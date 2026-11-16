@@ -446,6 +446,35 @@ def run(args):
     M['E_planning'].update(horizon=Hp, trials=int(len(picks)),
                            note='action_nmse in normalized action units; 1.0 ~ predicting zero (the mean)')
 
+    # ---- organization scorecard ----------------------------------------------------
+    print('organization metrics', flush=True)
+    O = {}
+    sub = rng.choice(len(zte), min(3000, len(zte)), replace=False)
+    zs_std = (zte - zte.mean(0)) / np.maximum(zte.std(0), 1e-6)
+    try:  # task clustering quality, cosine on standardized latents (-1..1, higher = cleaner)
+        from sklearn.metrics import silhouette_score
+        O['task_silhouette'] = float(silhouette_score(zs_std[sub], tte[sub], metric='cosine'))
+        O['object_silhouette'] = float(silhouette_score(zs_std[sub], ote[sub], metric='cosine'))
+    except ImportError:
+        pass
+    # geometric faithfulness: within a task, do latent distances track physical distances?
+    phys_vec = np.concatenate([lab['ee_pos'][te_frames], lab['ee_rot'][te_frames], lab['gripper'][te_frames]], 1)
+    phys_vec = (phys_vec - phys_vec.mean(0)) / np.maximum(phys_vec.std(0), 1e-6)
+    iso = []
+    for i in range(len(c.tasks)):
+        rows = np.flatnonzero(tte == i)
+        if len(rows) < 50:
+            continue
+        a_, b_ = rng.choice(rows, 3000), rng.choice(rows, 3000)
+        iso.append(spearman(np.linalg.norm(zte[a_] - zte[b_], axis=1),
+                            np.linalg.norm(phys_vec[a_] - phys_vec[b_], axis=1)))
+    O['latent_physical_distance_spearman'] = float(np.mean(iso)) if iso else float('nan')
+    # family balance: weaker family's (position + rotation) R^2 over the stronger family's
+    fam_scores = [np.nanmean([B[f + '_within']['ee_pos'], B[f + '_within']['ee_rot']]) for f in c.families]
+    if len(fam_scores) > 1 and max(fam_scores) > 0:
+        O['family_balance'] = float(min(fam_scores) / max(fam_scores))
+    M['C_organization'] = O
+
     # ---- within-task PCA (BeJEPA Fig. 4 style) ------------------------------------
     # remove each task's mean latent, PCA on the rest: do the leading within-task directions
     # line up with physical axes of the robot?
