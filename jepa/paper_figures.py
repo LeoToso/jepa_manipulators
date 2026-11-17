@@ -332,10 +332,10 @@ def trajectories_figure(models, a):
         ax.text(ks[-1], base, 'no information', ha='right', va='bottom', fontsize=7, color=INK2)
         ax.set_xscale('log')
         ax.set_yscale('log')
-        from matplotlib.ticker import FormatStrFormatter
+        from matplotlib.ticker import FormatStrFormatter, LogLocator, NullFormatter
+        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
         ax.yaxis.set_major_formatter(FormatStrFormatter('%g'))
-        ax.yaxis.set_minor_formatter(FormatStrFormatter('%g'))
-        ax.tick_params(axis='y', which='minor', labelsize=7)
+        ax.yaxis.set_minor_formatter(NullFormatter())
         ax.set_xticks(ks, [str(k) for k in ks])
         ax.set_xlabel('number of leading PCs (of this task\'s latents)', fontsize=8)
         ax.set_ylabel(f'{r2_name} error [{unit}] (linear fit)', fontsize=8)
