@@ -421,21 +421,21 @@ def pc_error_figure(models, a):
             ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
             ax.yaxis.set_major_formatter(FormatStrFormatter('%g'))
             ax.yaxis.set_minor_formatter(NullFormatter())
-            ax.set_xlim(0, kk.max() + 2)
+            ax.set_xlim(1, kk.max())
+            ax.set_xticks([1] + [k for k in range(25, int(kk.max()) + 1, 25)] +
+                          ([int(kk.max())] if kk.max() % 25 else []))
             if r == len(objects) - 1:
                 ax.set_xlabel('number of leading principal directions')
             ax.set_ylabel(f'{qname} error [{unit}]')
-            ax.set_title(f'{c.tasks[t]} ({len(ho_eps)} held-out episodes)', fontsize=9.5)
-            if r == 0 and col == 1:
-                ax.legend(fontsize=8, loc='upper right')
+            ax.set_title(c.tasks[t], fontsize=9.5)
     for col in range(2):  # same y-range down each column, so objects compare directly
         lo = min(ax.get_ylim()[0] for ax in axes[:, col])
         hi = max(ax.get_ylim()[1] for ax in axes[:, col])
         for ax in axes[:, col]:
             ax.set_ylim(lo, hi)
-    fig.suptitle('How much of the robot state a linear readout of the leading latent directions recovers '
-                 '(lower is better)', fontsize=10.5)
-    fig.tight_layout()
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    fig.legend(handles, labels, loc='lower center', ncol=len(models), fontsize=9, bbox_to_anchor=(0.5, 0.0))
     save(fig, a.out, 'fig_latent_pc_error')
     with open(os.path.join(a.out, 'latent_pc_error.json'), 'w') as fh:
         json.dump(record, fh, indent=1)
