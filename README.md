@@ -184,6 +184,11 @@ gripper, joints). It decodes the world model's k-step predictions and reports er
 degrees, against the decoder's limit and a "robot does not move" baseline. `jepa.decode` does the
 same with images, the only check that the object is predicted (the dataset has no object labels).
 
+`jepa.paper_figures` makes publication figures comparing up to three models: t-SNE of test latents
+coloured by EE height / rotation (with a neighbourhood-smoothness score in the full latent space),
+decoded vs measured robot state, open-loop rollouts, a metric summary over seeds, and LeJEPA-style
+panels (1-D projections vs N(0,1), spectra, patch-token PCA).
+
 `jepa.report` collects the summary table and every figure of every model into one self-contained
 HTML page (analyses as rows, models as columns), to open in a browser.
 
