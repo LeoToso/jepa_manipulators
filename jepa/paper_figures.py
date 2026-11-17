@@ -253,13 +253,8 @@ def geometry_figure(models, a, rng):
     save(fig, a.out, 'fig_latent_geometry')
 
 
-def trajectories_figure(models, a):
-    """Test episodes of one task in the two leading principal components of that task's latents.
-    If the main directions of variation are physical, the colour changes smoothly along one axis and
-    the episodes trace the same path."""
-    print('figure: per-task latent trajectories ...', flush=True)
-    ctx = _test_context(models)
-    c, ep, n = ctx['c'], ctx['ep'], len(models)
+def _trajectory_rows(ctx, a):
+    c = ctx['c']
     rows = []
     for prefix in ('pick_and_place', 'rotate'):
         tids = [t for t in np.unique(ctx['task']) if c.tasks[t].startswith(prefix)]
@@ -273,14 +268,28 @@ def trajectories_figure(models, a):
         else:  # colour by the EE axis that varies most within the task; R² of the 3-D position
             ax_i = int(np.argmax(ctx['pos'][ctx['task'] == t].var(0)))
             rows.append((t, f'EE {"xyz"[ax_i]}', 'cm', ctx['pos'][:, ax_i], ctx['pos'], '3-D EE position'))
+    return rows
+
+
+def trajectories_figure(models, a):
+    """Test episodes of one task in the two leading principal components of that task's latents.
+    If the main directions of variation are physical, the colour changes smoothly along one axis and
+    the episodes trace the same path."""
+    print('figure: per-task latent trajectories ...', flush=True)
+    ctx = _test_context(models)
+    c, ep, n = ctx['c'], ctx['ep'], len(models)
+    rows = _trajectory_rows(ctx, a)
     fig, axes = plt.subplots(len(rows), n + 1, figsize=(3.6 * n + 4.2, 3.4 * len(rows)), squeeze=False,
                              gridspec_kw={'width_ratios': [1] * n + [0.9]})
     ks = np.array([1, 2, 3, 5, 8, 12, 20, 30, 50])
 
-    def r2_of(F, Yt):
+    def fit(F, Yt):
         X = np.c_[F, np.ones(len(F))]
         res = Yt - X @ np.linalg.lstsq(X, Yt, rcond=None)[0]
-        return 1 - res.var(0).sum() / max(Yt.var(0).sum(), 1e-12)  # fraction of variance explained
+        r2 = 1 - res.var(0).sum() / max(Yt.var(0).sum(), 1e-12)  # fraction of variance explained
+        return r2, float(np.sqrt((res ** 2).sum(1).mean()))       # RMS error (3-D norm for position)
+
+    record = {}
 
     for r, (t, name, unit, y, Y, r2_name) in enumerate(rows):
         idx = np.flatnonzero(ctx['task'] == t)
@@ -295,10 +304,12 @@ def trajectories_figure(models, a):
             vt = np.linalg.svd(z, full_matrices=False)[2]
             pcs = z @ vt[:ks.max()].T
             pc = pcs[:, :2]
-            r2 = r2_of(pc, Yt)
+            r2 = fit(pc, Yt)[0]
             kk = ks[ks <= pcs.shape[1]]
-            axes[r, n].plot(kk, [r2_of(pcs[:, :k], Yt) for k in kk], color=MODEL_COLORS[j], marker='o', ms=3,
-                            label=m['label'])
+            fits = [fit(pcs[:, :k], Yt) for k in kk]
+            axes[r, n].plot(kk, [f[1] for f in fits], color=MODEL_COLORS[j], marker='o', ms=3, label=m['label'])
+            record.setdefault(c.tasks[t], {})[m['label']] = {
+                'k': kk.tolist(), 'r2': [f[0] for f in fits], f'rmse_{unit}': [f[1] for f in fits]}
             ax = axes[r, j]
             for e in np.unique(ep[idx]):
                 k = ep[idx] == e
@@ -316,18 +327,88 @@ def trajectories_figure(models, a):
                 cb.set_label(f'{name} [{unit}]', fontsize=8)
                 cb.outline.set_visible(False)
         ax = axes[r, n]
+        base = float(np.sqrt(((Yt - Yt.mean(0)) ** 2).sum(1).mean()))  # error of predicting the mean
+        ax.axhline(base, color=INK2, lw=1, ls='--')
+        ax.text(ks[-1], base, 'no information', ha='right', va='bottom', fontsize=7, color=INK2)
         ax.set_xscale('log')
+        ax.set_yscale('log')
+        from matplotlib.ticker import FormatStrFormatter
+        ax.yaxis.set_major_formatter(FormatStrFormatter('%g'))
+        ax.yaxis.set_minor_formatter(FormatStrFormatter('%g'))
+        ax.tick_params(axis='y', which='minor', labelsize=7)
         ax.set_xticks(ks, [str(k) for k in ks])
-        ax.set_ylim(0, 1.02)
         ax.set_xlabel('number of leading PCs (of this task\'s latents)', fontsize=8)
-        ax.set_ylabel(f'{r2_name}: R² (linear)', fontsize=8)
-        ax.set_title(f'How many principal directions\nare needed for {r2_name}?', fontsize=9)
+        ax.set_ylabel(f'{r2_name} error [{unit}] (linear fit)', fontsize=8)
+        ax.set_title(f'{r2_name} left unexplained by the\nleading principal directions (lower is better)',
+                     fontsize=9)
         if r == 0:
-            ax.legend(fontsize=7.5, loc='upper left')
+            ax.legend(fontsize=7.5, loc='lower left')
     fig.suptitle('Test episodes in the two leading principal directions of one task\'s latents '
                  '(black dot = episode start; colour = physical state)', fontsize=10.5)
-    fig.tight_layout()
+    fig.tight_layout(w_pad=3.0)
     save(fig, a.out, 'fig_latent_trajectories')
+    with open(os.path.join(a.out, 'latent_trajectories_pcs.json'), 'w') as fh:
+        json.dump(record, fh, indent=1)
+
+
+def pc_content_figure(models, a):
+    """What do the leading principal directions of one task's latents encode? Each cell is the
+    fraction of a PC's variance explained by one variable: squared correlation for a physical
+    quantity, and the between-episode share of variance for 'episode' (anything constant within an
+    episode: object placement, lighting, appearance)."""
+    print('figure: content of the leading principal directions ...', flush=True)
+    ctx = _test_context(models)
+    c, ep, n, npc = ctx['c'], ctx['ep'], len(models), 5
+    lab, frames = ctx['ev0'].labels, ctx['frames']
+    speed = 100 * np.linalg.norm(lab['ee_lin_vel'][frames], axis=1)
+    cand = [('EE x', ctx['pos'][:, 0]), ('EE y', ctx['pos'][:, 1]), ('EE z', ctx['pos'][:, 2]),
+            ('EE rotation', ctx['rot'][:, 2]), ('gripper', lab['gripper'][frames, 0]),
+            ('progress', ctx['progress']), ('EE speed', speed), ('episode', None)]
+    rows = _trajectory_rows(ctx, a)
+    fig, axes = plt.subplots(len(rows), n, figsize=(3.3 * n + 1.0, 2.9 * len(rows)), squeeze=False)
+    record = {}
+    for r, row in enumerate(rows):
+        t = row[0]
+        idx = np.flatnonzero(ctx['task'] == t)
+        for j, m in enumerate(models):
+            z = m['z'][idx] - m['z'][idx].mean(0)
+            _, sv, vt = np.linalg.svd(z, full_matrices=False)
+            frac = sv ** 2 / (sv ** 2).sum()
+            pcs = z @ vt[:npc].T
+            M = np.zeros((npc, len(cand)))
+            for i in range(npc):
+                p_ = pcs[:, i]
+                for k, (name, v) in enumerate(cand):
+                    if v is None:
+                        e = ep[idx]
+                        means = np.array([p_[e == u].mean() for u in np.unique(e)])
+                        counts = np.array([(e == u).sum() for u in np.unique(e)])
+                        M[i, k] = (counts * (means - p_.mean()) ** 2).sum() / max(((p_ - p_.mean()) ** 2).sum(), 1e-12)
+                    else:
+                        vv = v[idx]
+                        M[i, k] = 0.0 if vv.std() < 1e-9 else np.corrcoef(p_, vv)[0, 1] ** 2
+            ax = axes[r, j]
+            im = ax.imshow(M, cmap=SEQ, vmin=0, vmax=1, aspect='auto')
+            for i in range(npc):
+                for k in range(len(cand)):
+                    ax.text(k, i, f'{M[i, k]:.2f}', ha='center', va='center', fontsize=6.5,
+                            color='white' if M[i, k] > 0.55 else INK)
+            ax.set_xticks(range(len(cand)), [nm for nm, _ in cand], rotation=45, ha='right', fontsize=7.5)
+            ax.set_yticks(range(npc), [f'PC{i + 1} ({100 * frac[i]:.0f}%)' for i in range(npc)], fontsize=7.5)
+            ax.grid(False)
+            ax.set_title(f'{m["label"]}' + f'\n{c.tasks[t]}', fontsize=9, color=MODEL_COLORS[j])
+            record.setdefault(c.tasks[t], {})[m['label']] = {
+                'variance_fraction': frac[:npc].tolist(),
+                'r2': {nm: M[:, k].tolist() for k, (nm, _) in enumerate(cand)}}
+        cb = fig.colorbar(im, ax=axes[r, n - 1], fraction=0.046, pad=0.03)
+        cb.set_label('fraction of PC variance explained', fontsize=7.5)
+        cb.outline.set_visible(False)
+    fig.suptitle('What the leading principal directions of one task\'s latents encode '
+                 '(in brackets: share of latent variance; "episode" = constant within an episode)', fontsize=10)
+    fig.tight_layout()
+    save(fig, a.out, 'fig_latent_pc_content')
+    with open(os.path.join(a.out, 'latent_pc_content.json'), 'w') as fh:
+        json.dump(record, fh, indent=1)
 
 
 def main():
@@ -339,7 +420,7 @@ def main():
     p.add_argument('--n-tsne', type=int, default=2500, help='points per family in the t-SNE panels')
     p.add_argument('--rollout-steps', type=int, default=40)
     p.add_argument('--seed', type=int, default=0)
-    p.add_argument('--figures', default='organization,summary,lejepa,geometry,trajectories')
+    p.add_argument('--figures', default='organization,summary,lejepa,geometry,trajectories,pc_content')
     p.add_argument('--queries', default='', help='comma-separated global frame indices for the retrieval '
                    'panel (default: one mid-episode frame per family)')
     p.add_argument('--trajectory-tasks', default='', help='comma-separated task names for fig_latent_trajectories')
@@ -373,6 +454,8 @@ def main():
         geometry_figure(models, a, rng)
     if 'trajectories' in figs:
         trajectories_figure(models, a)
+    if 'pc_content' in figs:
+        pc_content_figure(models, a)
     if 'organization' in figs:
         organization_figure(models, a, rng, sel, height_cm, rot_deg, frames, lab, c, ev0)
     if 'summary' in figs:
