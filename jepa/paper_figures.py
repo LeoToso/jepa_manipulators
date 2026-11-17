@@ -261,17 +261,22 @@ def trajectories_figure(models, a):
     ctx = _test_context(models)
     c, ep, n = ctx['c'], ctx['ep'], len(models)
     rows = []
-    for prefix, name, unit in (('pick_and_place', 'EE height', 'cm'), ('rotate', 'EE rotation', 'deg')):
+    for prefix in ('pick_and_place', 'rotate'):
         tids = [t for t in np.unique(ctx['task']) if c.tasks[t].startswith(prefix)]
         if a.trajectory_tasks:
             tids = [t for t in tids if c.tasks[t] in a.trajectory_tasks.split(',')] or tids
-        if tids:
-            y = ctx['pos'][:, 2] if prefix == 'pick_and_place' else ctx['rot'][:, 2]
-            rows.append((tids[0], name, unit, y))
+        if not tids:
+            continue
+        t = tids[0]
+        if prefix == 'rotate':  # rotation about the vertical axis; R² of that angle
+            rows.append((t, 'EE rotation', 'deg', ctx['rot'][:, 2], ctx['rot'][:, 2:3], 'EE rotation'))
+        else:  # colour by the EE axis that varies most within the task; R² of the 3-D position
+            ax_i = int(np.argmax(ctx['pos'][ctx['task'] == t].var(0)))
+            rows.append((t, f'EE {"xyz"[ax_i]}', 'cm', ctx['pos'][:, ax_i], ctx['pos'], '3-D EE position'))
     fig, axes = plt.subplots(len(rows), n, figsize=(3.6 * n + 0.8, 3.4 * len(rows)), squeeze=False)
-    for r, (t, name, unit, y) in enumerate(rows):
+    for r, (t, name, unit, y, Y, r2_name) in enumerate(rows):
         idx = np.flatnonzero(ctx['task'] == t)
-        yt = y[idx]
+        yt, Yt = y[idx], Y[idx]
         if unit == 'deg':
             lim = np.percentile(np.abs(yt), 98)
             cmap, vmin, vmax = DIV, -lim, lim
@@ -281,8 +286,8 @@ def trajectories_figure(models, a):
             z = m['z'][idx] - m['z'][idx].mean(0)
             pc = z @ np.linalg.svd(z, full_matrices=False)[2][:2].T
             X = np.c_[pc, np.ones(len(pc))]
-            res = yt - X @ np.linalg.lstsq(X, yt, rcond=None)[0]
-            r2 = 1 - res.var() / max(yt.var(), 1e-12)
+            res = Yt - X @ np.linalg.lstsq(X, Yt, rcond=None)[0]
+            r2 = 1 - res.var(0).sum() / max(Yt.var(0).sum(), 1e-12)  # fraction of variance explained
             ax = axes[r, j]
             for e in np.unique(ep[idx]):
                 k = ep[idx] == e
@@ -291,7 +296,7 @@ def trajectories_figure(models, a):
             sc = ax.scatter(pc[:, 0], pc[:, 1], c=yt, cmap=cmap, vmin=vmin, vmax=vmax, s=6, linewidths=0, zorder=2)
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_title(f'{m["label"]}\n{name} explained by PC1-2: R²={r2:.2f}', fontsize=9, color=MODEL_COLORS[j])
+            ax.set_title(f'{m["label"]}\n{r2_name} explained by PC1-2: R²={r2:.2f}', fontsize=9, color=MODEL_COLORS[j])
             if j == 0:
                 ax.set_ylabel(f'{c.tasks[t]}\nPC2', fontsize=8.5)
             ax.set_xlabel('PC1', fontsize=8)

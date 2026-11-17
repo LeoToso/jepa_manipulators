@@ -192,7 +192,7 @@ latent is a map of the robot's physical state: `fig_latent_geometry` (nearest te
 space from other episodes, shown as images with their physical offset from the query; the mean
 physical gap of the k nearest neighbours; physical distance vs latent-distance rank within a task) and
 `fig_latent_trajectories` (test episodes of one task in the 2 leading PCs of that task's latents,
-coloured by EE height / rotation). `--figures geometry,trajectories` makes only those (fast, no t-SNE);
+coloured by the most-varying EE axis / EE rotation; R² of 3-D position / rotation from the 2 PCs). `--figures geometry,trajectories` makes only those (fast, no t-SNE);
 `--queries 1234,5678` picks the retrieval query frames.
 
 `jepa.report` collects the summary table and every figure of every model into one self-contained
