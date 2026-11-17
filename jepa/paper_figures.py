@@ -347,7 +347,6 @@ def trajectories_figure(models, a):
         ax = axes[r, n]
         base = float(np.sqrt(((Yt - Yt.mean(0)) ** 2).sum(1).mean()))  # error of predicting the mean
         ax.axhline(base, color=INK2, lw=1, ls='--')
-        ax.text(ks[-1], base, 'no information', ha='right', va='bottom', fontsize=7, color=INK2)
         ax.set_xscale('log')
         ax.set_yscale('log')
         from matplotlib.ticker import FormatStrFormatter, LogLocator, NullFormatter
@@ -358,11 +357,15 @@ def trajectories_figure(models, a):
         ax.set_xticks(shown_k, [str(k) for k in shown_k])
         ax.xaxis.set_minor_formatter(NullFormatter())
         ax.set_xlabel('number of leading PCs (fit on train episodes)', fontsize=8)
-        ax.set_ylabel(f'{r2_name} error [{unit}], test episodes\n(dotted: on the fitting frames)', fontsize=8)
+        ax.set_ylabel(f'{r2_name} error [{unit}]', fontsize=8)
         ax.set_title(f'{r2_name} left unexplained by the\nleading principal directions (lower is better)',
                      fontsize=9)
-        if r == 0:
-            ax.legend(fontsize=7.5, loc='lower left')
+        from matplotlib.lines import Line2D
+        style = [Line2D([], [], color=INK, lw=2, marker='o', ms=3, label='held-out test episodes'),
+                 Line2D([], [], color=INK, lw=1, ls=':', label='train episodes (used for the fit)'),
+                 Line2D([], [], color=INK2, lw=1, ls='--', label='no information (predict the mean)')]
+        models_leg = [Line2D([], [], color=MODEL_COLORS[j], lw=2, label=m['label']) for j, m in enumerate(models)]
+        ax.legend(handles=(models_leg if r == 0 else style), fontsize=7, loc='lower left')
     fig.suptitle('Test episodes in the two leading principal directions of one task\'s latents '
                  '(black dot = episode start; colour = physical state)', fontsize=10.5)
     fig.tight_layout(w_pad=3.0)
