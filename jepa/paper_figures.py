@@ -273,7 +273,15 @@ def trajectories_figure(models, a):
         else:  # colour by the EE axis that varies most within the task; R² of the 3-D position
             ax_i = int(np.argmax(ctx['pos'][ctx['task'] == t].var(0)))
             rows.append((t, f'EE {"xyz"[ax_i]}', 'cm', ctx['pos'][:, ax_i], ctx['pos'], '3-D EE position'))
-    fig, axes = plt.subplots(len(rows), n, figsize=(3.6 * n + 0.8, 3.4 * len(rows)), squeeze=False)
+    fig, axes = plt.subplots(len(rows), n + 1, figsize=(3.6 * n + 4.2, 3.4 * len(rows)), squeeze=False,
+                             gridspec_kw={'width_ratios': [1] * n + [0.9]})
+    ks = np.array([1, 2, 3, 5, 8, 12, 20, 30, 50])
+
+    def r2_of(F, Yt):
+        X = np.c_[F, np.ones(len(F))]
+        res = Yt - X @ np.linalg.lstsq(X, Yt, rcond=None)[0]
+        return 1 - res.var(0).sum() / max(Yt.var(0).sum(), 1e-12)  # fraction of variance explained
+
     for r, (t, name, unit, y, Y, r2_name) in enumerate(rows):
         idx = np.flatnonzero(ctx['task'] == t)
         yt, Yt = y[idx], Y[idx]
@@ -284,10 +292,13 @@ def trajectories_figure(models, a):
             cmap, (vmin, vmax) = SEQ, np.percentile(yt, [2, 98])
         for j, m in enumerate(models):
             z = m['z'][idx] - m['z'][idx].mean(0)
-            pc = z @ np.linalg.svd(z, full_matrices=False)[2][:2].T
-            X = np.c_[pc, np.ones(len(pc))]
-            res = Yt - X @ np.linalg.lstsq(X, Yt, rcond=None)[0]
-            r2 = 1 - res.var(0).sum() / max(Yt.var(0).sum(), 1e-12)  # fraction of variance explained
+            vt = np.linalg.svd(z, full_matrices=False)[2]
+            pcs = z @ vt[:ks.max()].T
+            pc = pcs[:, :2]
+            r2 = r2_of(pc, Yt)
+            kk = ks[ks <= pcs.shape[1]]
+            axes[r, n].plot(kk, [r2_of(pcs[:, :k], Yt) for k in kk], color=MODEL_COLORS[j], marker='o', ms=3,
+                            label=m['label'])
             ax = axes[r, j]
             for e in np.unique(ep[idx]):
                 k = ep[idx] == e
@@ -304,6 +315,15 @@ def trajectories_figure(models, a):
                 cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
                 cb.set_label(f'{name} [{unit}]', fontsize=8)
                 cb.outline.set_visible(False)
+        ax = axes[r, n]
+        ax.set_xscale('log')
+        ax.set_xticks(ks, [str(k) for k in ks])
+        ax.set_ylim(0, 1.02)
+        ax.set_xlabel('number of leading PCs (of this task\'s latents)', fontsize=8)
+        ax.set_ylabel(f'{r2_name}: R² (linear)', fontsize=8)
+        ax.set_title(f'How many principal directions\nare needed for {r2_name}?', fontsize=9)
+        if r == 0:
+            ax.legend(fontsize=7.5, loc='upper left')
     fig.suptitle('Test episodes in the two leading principal directions of one task\'s latents '
                  '(black dot = episode start; colour = physical state)', fontsize=10.5)
     fig.tight_layout()
