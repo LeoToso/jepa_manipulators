@@ -17,6 +17,13 @@ Writes (PDF + PNG) in --out:
                            full latent space; decoded vs measured EE state; open-loop rollouts
   fig_latent_summary       key metrics as small multiples (seeds as dots)
   fig_latent_lejepa        random 1-D projections vs N(0,1), covariance spectra, patch-token PCA
+  fig_latent_geometry      is the latent a map of the robot's physical state? nearest-neighbour
+                           retrieval across episodes (images, with their physical offsets),
+                           neighbour error vs k, and physical distance vs latent-distance rank
+  fig_latent_trajectories  test episodes of one task in the 2 leading PCs of that task's latents,
+                           coloured by the task's physical variable
+
+--figures selects a subset, e.g. --figures geometry,trajectories (skips the slow t-SNE).
 """
 from __future__ import annotations
 
@@ -95,6 +102,209 @@ def tsne(z, seed=0):
     return TSNE(2, init='pca', random_state=seed, perplexity=40).fit_transform(zs)
 
 
+def short_task(t):
+    return t.replace('pick_and_place_', 'pick ').replace('rotate_', 'rotate ')
+
+
+def _sqdist(q, z):
+    return np.maximum((q ** 2).sum(1)[:, None] + (z ** 2).sum(1)[None] - 2 * q @ z.T, 0)
+
+
+def _test_context(models):
+    ev0 = models[0]['ev']
+    c, frames = ev0.cache, models[0]['frames']
+    task = ev0.task_of_frame[frames]
+    return {'ev0': ev0, 'c': c, 'frames': frames, 'ep': c.episode_of_frame[frames], 'task': task,
+            'fam': np.array([task_family(c.tasks[t]) for t in task]),
+            'pos': 100 * ev0.labels['ee_pos'][frames],                 # cm
+            'rot': np.degrees(ev0.labels['ee_rot'][frames]),           # rotation vector, deg
+            'progress': ev0.labels['progress'][frames, 0]}
+
+
+def _default_queries(ctx):
+    """One frame per family, about halfway through the median-length test episode of that family."""
+    c, out = ctx['c'], []
+    for f in ('pick_and_place', 'rotate'):
+        eps = np.unique(ctx['ep'][ctx['fam'] == f])
+        if not len(eps):
+            continue
+        e = sorted(eps, key=lambda e: c.lengths[e])[len(eps) // 2]
+        idx = np.flatnonzero(ctx['ep'] == e)
+        out.append(int(idx[np.argmin(np.abs(ctx['progress'][idx] - 0.55))]))
+    return out
+
+
+def geometry_figure(models, a, rng):
+    """Is the latent a map of the robot's physical state? Nearest neighbours in latent space, taken
+    from *other* test episodes, should show the robot in the same configuration."""
+    print('figure: latent geometry (retrieval, neighbour error, distance rank) ...', flush=True)
+    ctx = _test_context(models)
+    c, frames, ep, fam, pos, rot = ctx['c'], ctx['frames'], ctx['ep'], ctx['fam'], ctx['pos'], ctx['rot']
+    n, n_nb = len(models), 5
+    if a.queries:
+        lookup = {int(f): i for i, f in enumerate(frames)}
+        qs = [lookup[int(f)] for f in a.queries.split(',') if int(f) in lookup]
+    else:
+        qs = _default_queries(ctx)
+
+    fig = plt.figure(figsize=(14, 1.45 * n * ((len(qs) + 1) // 2) + 3.6))
+    outer = fig.add_gridspec(2, 1, height_ratios=[1.45 * n * ((len(qs) + 1) // 2), 3.0], hspace=0.32,
+                             top=0.93, bottom=0.07)
+    ret = outer[0].subgridspec((len(qs) + 1) // 2, min(2, len(qs)), wspace=0.08, hspace=0.25)
+    for qi, q in enumerate(qs):
+        blk = ret[qi // 2, qi % 2].subgridspec(n, n_nb + 2, wspace=0.06, hspace=0.42,
+                                               width_ratios=[1, 0.22] + [1] * n_nb)
+        axq = fig.add_subplot(blk[:, 0])
+        axq.imshow(c.images[frames[q]])
+        axq.set_xticks([])
+        axq.set_yticks([])
+        for sp in axq.spines.values():
+            sp.set_visible(True)
+            sp.set_color(INK)
+            sp.set_linewidth(2)
+        axq.set_title(f'query\n{short_task(c.tasks[ctx["task"][q]])}', fontsize=8, fontweight='bold')
+        for j, m in enumerate(models):
+            d = _sqdist(m['z'][q:q + 1], m['z'])[0]
+            d[ep == ep[q]] = np.inf
+            picks, seen = [], set()
+            for i in np.argsort(d):  # the closest frame in each of the closest other episodes
+                if ep[i] in seen or not np.isfinite(d[i]):
+                    continue
+                seen.add(ep[i])
+                picks.append(i)
+                if len(picks) == n_nb:
+                    break
+            for k, i in enumerate(picks):
+                ax = fig.add_subplot(blk[j, k + 2])
+                ax.imshow(c.images[frames[i]])
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for sp in ax.spines.values():
+                    sp.set_visible(True)
+                    sp.set_color(MODEL_COLORS[j])
+                    sp.set_linewidth(1.5)
+                dp = np.linalg.norm(pos[i] - pos[q])
+                dr = np.linalg.norm(rot[i] - rot[q])
+                same = ctx['task'][i] == ctx['task'][q]
+                ax.set_title(f'{short_task(c.tasks[ctx["task"][i]])}{"" if same else " ✗"}\n'
+                             f'Δ{dp:.1f} cm  Δ{dr:.0f}°', fontsize=6.5, color=INK if same else '#b8302f', pad=2)
+                if k == 0:
+                    ax.set_ylabel(m['label'], color=MODEL_COLORS[j], fontsize=8.5, fontweight='bold')
+
+    # ---- quantitative curves ----------------------------------------------------------------
+    curves = outer[1].subgridspec(1, 4, wspace=0.38)
+    K = 50
+    specs = (('pick_and_place', 'position', lambda i, j: np.linalg.norm(pos[i] - pos[j], axis=-1), 'cm'),
+             ('rotate', 'rotation', lambda i, j: np.linalg.norm(rot[i] - rot[j], axis=-1), 'deg'))
+    for col, (f, name, dist, unit) in enumerate(specs):
+        idx = np.flatnonzero(fam == f)
+        if not len(idx):
+            continue
+        qidx = rng.choice(idx, min(1000, len(idx)), replace=False)
+        ax = fig.add_subplot(curves[0, col])
+        for j, m in enumerate(models):
+            D = _sqdist(m['z'][qidx], m['z'])
+            D[ep[qidx][:, None] == ep[None, :]] = np.inf
+            nn = np.argpartition(D, K, axis=1)[:, :K]
+            nn = np.take_along_axis(nn, np.argsort(np.take_along_axis(D, nn, 1), 1), 1)
+            err = dist(qidx[:, None], nn)                       # (Q, K)
+            cum = np.cumsum(err, 1) / np.arange(1, K + 1)
+            ax.plot(np.arange(1, K + 1), cum.mean(0), color=MODEL_COLORS[j], label=m['label'])
+        rnd = dist(qidx, rng.choice(len(frames), len(qidx)))
+        ax.axhline(rnd.mean(), color=INK2, lw=1, ls='--')
+        ax.text(K, rnd.mean(), 'random frame', ha='right', va='top', fontsize=7, color=INK2)
+        ax.set_xscale('log')
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel('k nearest latent neighbours (other episodes)')
+        ax.set_ylabel(f'EE {name} difference [{unit}]')
+        ax.set_title(f'{f.replace("_", "-")}: physical gap of\nlatent neighbours (lower is better)', fontsize=9)
+        if col == 0:
+            ax.legend(fontsize=7.5, loc='center right')
+    for col, (f, name, dist, unit) in enumerate(specs):
+        ax = fig.add_subplot(curves[0, 2 + col])
+        idx = np.flatnonzero(fam == f)
+        if not len(idx):
+            continue
+        i = rng.choice(idx, 30000)
+        j_ = rng.choice(idx, 30000)
+        keep = (ctx['task'][i] == ctx['task'][j_]) & (ep[i] != ep[j_])  # same task, different episode
+        i, j_ = i[keep], j_[keep]
+        phys = dist(i, j_)
+        edges = np.linspace(0, 100, 21)
+        mid = 0.5 * (edges[1:] + edges[:-1])
+        for jm, m in enumerate(models):
+            dl = np.linalg.norm(m['z'][i] - m['z'][j_], axis=1)
+            rank = 100 * np.argsort(np.argsort(dl)) / max(len(dl) - 1, 1)
+            b = np.clip(np.digitize(rank, edges) - 1, 0, len(mid) - 1)
+            q = np.array([np.percentile(phys[b == k], [25, 50, 75]) if (b == k).any() else [np.nan] * 3
+                          for k in range(len(mid))])
+            rho = float(np.corrcoef(rank, np.argsort(np.argsort(phys)))[0, 1])
+            ax.fill_between(mid, q[:, 0], q[:, 2], color=MODEL_COLORS[jm], alpha=0.15, linewidth=0)
+            ax.plot(mid, q[:, 1], color=MODEL_COLORS[jm], label=f'{m["label"]} (ρ={rho:.2f})')
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel('latent distance (percentile among pairs)')
+        ax.set_ylabel(f'EE {name} difference [{unit}]')
+        ax.set_title(f'{f.replace("_", "-")}: physical vs latent distance\n(same task, different episodes)',
+                     fontsize=9)
+        ax.legend(fontsize=7, loc='upper left')
+    fig.suptitle('Is the latent a map of the robot\'s state?  Top: nearest test frames in latent space from other '
+                 'episodes (Δ = physical offset from the query; ✗ = different task).  Bottom: the same, measured.',
+                 fontsize=10.5, y=0.985)
+    save(fig, a.out, 'fig_latent_geometry')
+
+
+def trajectories_figure(models, a):
+    """Test episodes of one task in the two leading principal components of that task's latents.
+    If the main directions of variation are physical, the colour changes smoothly along one axis and
+    the episodes trace the same path."""
+    print('figure: per-task latent trajectories ...', flush=True)
+    ctx = _test_context(models)
+    c, ep, n = ctx['c'], ctx['ep'], len(models)
+    rows = []
+    for prefix, name, unit in (('pick_and_place', 'EE height', 'cm'), ('rotate', 'EE rotation', 'deg')):
+        tids = [t for t in np.unique(ctx['task']) if c.tasks[t].startswith(prefix)]
+        if a.trajectory_tasks:
+            tids = [t for t in tids if c.tasks[t] in a.trajectory_tasks.split(',')] or tids
+        if tids:
+            y = ctx['pos'][:, 2] if prefix == 'pick_and_place' else ctx['rot'][:, 2]
+            rows.append((tids[0], name, unit, y))
+    fig, axes = plt.subplots(len(rows), n, figsize=(3.6 * n + 0.8, 3.4 * len(rows)), squeeze=False)
+    for r, (t, name, unit, y) in enumerate(rows):
+        idx = np.flatnonzero(ctx['task'] == t)
+        yt = y[idx]
+        if unit == 'deg':
+            lim = np.percentile(np.abs(yt), 98)
+            cmap, vmin, vmax = DIV, -lim, lim
+        else:
+            cmap, (vmin, vmax) = SEQ, np.percentile(yt, [2, 98])
+        for j, m in enumerate(models):
+            z = m['z'][idx] - m['z'][idx].mean(0)
+            pc = z @ np.linalg.svd(z, full_matrices=False)[2][:2].T
+            X = np.c_[pc, np.ones(len(pc))]
+            res = yt - X @ np.linalg.lstsq(X, yt, rcond=None)[0]
+            r2 = 1 - res.var() / max(yt.var(), 1e-12)
+            ax = axes[r, j]
+            for e in np.unique(ep[idx]):
+                k = ep[idx] == e
+                ax.plot(pc[k, 0], pc[k, 1], color=INK2, lw=0.5, alpha=0.5, zorder=1)
+                ax.scatter(pc[k, 0][:1], pc[k, 1][:1], s=14, color=INK, marker='o', zorder=3, linewidths=0)
+            sc = ax.scatter(pc[:, 0], pc[:, 1], c=yt, cmap=cmap, vmin=vmin, vmax=vmax, s=6, linewidths=0, zorder=2)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title(f'{m["label"]}\n{name} explained by PC1-2: R²={r2:.2f}', fontsize=9, color=MODEL_COLORS[j])
+            if j == 0:
+                ax.set_ylabel(f'{c.tasks[t]}\nPC2', fontsize=8.5)
+            ax.set_xlabel('PC1', fontsize=8)
+            if j == n - 1:
+                cb = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
+                cb.set_label(f'{name} [{unit}]', fontsize=8)
+                cb.outline.set_visible(False)
+    fig.suptitle('Test episodes in the two leading principal directions of one task\'s latents '
+                 '(black dot = episode start; colour = physical state)', fontsize=10.5)
+    fig.tight_layout()
+    save(fig, a.out, 'fig_latent_trajectories')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--model', action='append', required=True, help='LABEL=RUN_DIR:EVAL_DIR[,EVAL_DIR...]')
@@ -104,7 +314,12 @@ def main():
     p.add_argument('--n-tsne', type=int, default=2500, help='points per family in the t-SNE panels')
     p.add_argument('--rollout-steps', type=int, default=40)
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--figures', default='organization,summary,lejepa,geometry,trajectories')
+    p.add_argument('--queries', default='', help='comma-separated global frame indices for the retrieval '
+                   'panel (default: one mid-episode frame per family)')
+    p.add_argument('--trajectory-tasks', default='', help='comma-separated task names for fig_latent_trajectories')
     a = p.parse_args()
+    figs = set(a.figures.split(','))
     os.makedirs(a.out, exist_ok=True)
     models = [parse_model(s) for s in a.model]
     if len(models) > 3:
@@ -128,8 +343,22 @@ def main():
     sel = {f: np.sort(rng.choice(np.flatnonzero(fam == f), min(a.n_tsne, int((fam == f).sum())), replace=False))
            for f in ('pick_and_place', 'rotate')}
 
-    # ---- figure 1: organization ---------------------------------------------------------------
-    print('figure 1: t-SNE, decoded state, rollouts ...', flush=True)
+    n = len(models)
+    if 'geometry' in figs:
+        geometry_figure(models, a, rng)
+    if 'trajectories' in figs:
+        trajectories_figure(models, a)
+    if 'organization' in figs:
+        organization_figure(models, a, rng, sel, height_cm, rot_deg, frames, lab, c, ev0)
+    if 'summary' in figs:
+        summary_figure(models, a)
+    if 'lejepa' in figs:
+        lejepa_figure(models, a, rng, c, ev0)
+    print(f'[done] {a.out}')
+
+
+def organization_figure(models, a, rng, sel, height_cm, rot_deg, frames, lab, c, ev0):
+    print('figure: t-SNE, decoded state, rollouts ...', flush=True)
     n = len(models)
     fig = plt.figure(figsize=(3.3 * n + 0.6, 13.6))
     gs = fig.add_gridspec(5, n, height_ratios=[1, 1, 0.85, 0.85, 0.8], hspace=0.75, wspace=0.3,
@@ -225,8 +454,11 @@ def main():
                  'decoded robot state, and open-loop predictions', fontsize=10.5, y=0.975)
     save(fig, a.out, 'fig_latent_organization')
 
-    # ---- figure 2: summary small multiples --------------------------------------------------
-    print('figure 2: summary metrics ...', flush=True)
+
+
+def summary_figure(models, a):
+    print('figure: summary metrics ...', flush=True)
+    n = len(models)
 
     def get(ed, path):
         file, *keys = path
@@ -288,8 +520,11 @@ def main():
     fig.tight_layout()
     save(fig, a.out, 'fig_latent_summary')
 
-    # ---- figure 3: LeJEPA-style ------------------------------------------------------------------
-    print('figure 3: projections, spectra, patch PCA ...', flush=True)
+
+
+def lejepa_figure(models, a, rng, c, ev0):
+    print('figure: projections, spectra, patch PCA ...', flush=True)
+    n = len(models)
     shown = []  # mid-episode frames of four different tasks (two per family)
     for prefix in ('pick_and_place', 'rotate'):
         tids = [i for i, t in enumerate(c.tasks) if t.startswith(prefix)][:2]
@@ -349,7 +584,6 @@ def main():
             ax.set_title('input frames (patch PCA above)', fontsize=8, loc='left')
     fig.suptitle('Gaussianity, dimensionality and what the encoder attends to (LeJEPA-style)', fontsize=10.5)
     save(fig, a.out, 'fig_latent_lejepa')
-    print(f'[done] {a.out}')
 
 
 if __name__ == '__main__':

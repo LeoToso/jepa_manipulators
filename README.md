@@ -187,7 +187,13 @@ same with images, the only check that the object is predicted (the dataset has n
 `jepa.paper_figures` makes publication figures comparing up to three models: t-SNE of test latents
 coloured by EE height / rotation (with a neighbourhood-smoothness score in the full latent space),
 decoded vs measured robot state, open-loop rollouts, a metric summary over seeds, and LeJEPA-style
-panels (1-D projections vs N(0,1), spectra, patch-token PCA).
+panels (1-D projections vs N(0,1), spectra, patch-token PCA). Two more figures ask directly whether the
+latent is a map of the robot's physical state: `fig_latent_geometry` (nearest test frames in latent
+space from other episodes, shown as images with their physical offset from the query; the mean
+physical gap of the k nearest neighbours; physical distance vs latent-distance rank within a task) and
+`fig_latent_trajectories` (test episodes of one task in the 2 leading PCs of that task's latents,
+coloured by EE height / rotation). `--figures geometry,trajectories` makes only those (fast, no t-SNE);
+`--queries 1234,5678` picks the retrieval query frames.
 
 `jepa.report` collects the summary table and every figure of every model into one self-contained
 HTML page (analyses as rows, models as columns), to open in a browser.
