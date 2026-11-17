@@ -382,7 +382,7 @@ def pc_error_figure(models, a):
     ctx = _test_context(models)
     c, ev0 = ctx['c'], ctx['ev0']
     lab = ev0.labels
-    ks = np.array([1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120, 192, 256, 384, 512])
+    ks = np.array([1, 2, 3, 5, 8, 12, 16, 20, 25, 30, 40, 50, 60, 80, 100, 120, 140, 160, 192, 256, 384, 512])
     objects = [t[len('rotate_'):] for t in c.tasks if t.startswith('rotate_')
                and f'pick_and_place_{t[len("rotate_"):]}' in c.tasks]
     cols = (('pick_and_place', '3-D EE position', 'cm'), ('rotate', 'EE rotation', 'deg'))
@@ -412,19 +412,16 @@ def pc_error_figure(models, a):
                     res = Y_ho - X_ho @ np.linalg.lstsq(X_tr, Y_tr, rcond=None)[0]
                     err.append(float(np.sqrt((res ** 2).sum(1).mean())))
                     r2.append(float(1 - res.var(0).sum() / max(Y_ho.var(0).sum(), 1e-12)))
-                ax.plot(kk, err, color=MODEL_COLORS[j], marker='o', ms=3.5, label=m['label'])
+                ax.plot(kk, err, color=MODEL_COLORS[j], marker='o', ms=2.5, label=m['label'])
                 record.setdefault(c.tasks[t], {})[m['label']] = {
                     'k': kk.tolist(), f'rmse_{unit}': err, 'r2': r2,
                     'n_train_episodes': len(eps_of('train')), 'n_heldout_episodes': len(ho_eps)}
-            ax.set_xscale('log')
-            ax.set_yscale('log')
+            ax.set_yscale('log')  # semilogy: linear k, log error
             from matplotlib.ticker import FormatStrFormatter, LogLocator, NullFormatter
             ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
             ax.yaxis.set_major_formatter(FormatStrFormatter('%g'))
             ax.yaxis.set_minor_formatter(NullFormatter())
-            shown_k = [k for k in (1, 2, 5, 12, 30, 80, 192, 512) if k <= kk.max()]
-            ax.set_xticks(shown_k, [str(k) for k in shown_k])
-            ax.xaxis.set_minor_formatter(NullFormatter())
+            ax.set_xlim(0, kk.max() + 2)
             if r == len(objects) - 1:
                 ax.set_xlabel('number of leading principal directions')
             ax.set_ylabel(f'{qname} error [{unit}]')
