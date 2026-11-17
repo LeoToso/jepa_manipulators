@@ -375,56 +375,69 @@ def trajectories_figure(models, a):
 
 
 def pc_error_figure(models, a):
-    """Two panels: EE position error (pick-and-place task) and EE rotation error (rotate task) of a
-    linear readout from the k leading principal directions of the task's latents. PCA and the fit use
-    the task's training episodes; the error is measured on its validation + test episodes."""
+    """EE position error (pick-and-place task) and EE rotation error (rotate task) of a linear readout
+    from the k leading principal directions of the task's latents, one row per object. PCA and the
+    fit use the task's training episodes; the error is measured on its validation + test episodes."""
     print('figure: error vs number of principal directions ...', flush=True)
     ctx = _test_context(models)
     c, ev0 = ctx['c'], ctx['ev0']
     lab = ev0.labels
     ks = np.array([1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120, 192, 256, 384, 512])
-    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.9))
+    objects = [t[len('rotate_'):] for t in c.tasks if t.startswith('rotate_')
+               and f'pick_and_place_{t[len("rotate_"):]}' in c.tasks]
+    cols = (('pick_and_place', '3-D EE position', 'cm'), ('rotate', 'EE rotation', 'deg'))
+    fig, axes = plt.subplots(len(objects), 2, figsize=(9.6, 3.3 * len(objects)), squeeze=False)
     record = {}
-    for ax, (t, name, unit, _y, _Y, r2_name) in zip(axes, _trajectory_rows(ctx, a)):
-        eps_of = lambda split: [e for e in c.split_episodes(split) if c.episode_task[e] == t]
-        tr = ev0.episode_frames(eps_of('train'))
-        ho_eps = eps_of('val') + eps_of('test')
-        ho = ev0.episode_frames(ho_eps)
+    for r, obj in enumerate(objects):
+        for col, (fam_, qname, unit) in enumerate(cols):
+            ax = axes[r, col]
+            t = c.tasks.index(f'{fam_}_{obj}')
+            eps_of = lambda split: [e for e in c.split_episodes(split) if c.episode_task[e] == t]
+            tr = ev0.episode_frames(eps_of('train'))
+            ho_eps = eps_of('val') + eps_of('test')
+            ho = ev0.episode_frames(ho_eps)
 
-        def targets(f):
-            return np.degrees(lab['ee_rot'][f])[:, 2:3] if unit == 'deg' else 100 * lab['ee_pos'][f]
-        Y_tr, Y_ho = targets(tr), targets(ho)
-        for j, m in enumerate(models):
-            z_tr, z_ho = m['ev'].encode(tr), m['ev'].encode(ho)
-            mu = z_tr.mean(0)
-            vt = np.linalg.svd(z_tr - mu, full_matrices=False)[2]
-            kk = ks[ks <= vt.shape[0]]
-            err, r2 = [], []
-            for k in kk:
-                X_tr = np.c_[(z_tr - mu) @ vt[:k].T, np.ones(len(tr))]
-                X_ho = np.c_[(z_ho - mu) @ vt[:k].T, np.ones(len(ho))]
-                res = Y_ho - X_ho @ np.linalg.lstsq(X_tr, Y_tr, rcond=None)[0]
-                err.append(float(np.sqrt((res ** 2).sum(1).mean())))
-                r2.append(float(1 - res.var(0).sum() / max(Y_ho.var(0).sum(), 1e-12)))
-            ax.plot(kk, err, color=MODEL_COLORS[j], marker='o', ms=3.5, label=m['label'])
-            record.setdefault(c.tasks[t], {})[m['label']] = {
-                'k': kk.tolist(), f'rmse_{unit}': err, 'r2': r2, 'n_train_episodes': len(eps_of('train')),
-                'n_heldout_episodes': len(ho_eps)}
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        from matplotlib.ticker import FormatStrFormatter, LogLocator, NullFormatter
-        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
-        ax.yaxis.set_major_formatter(FormatStrFormatter('%g'))
-        ax.yaxis.set_minor_formatter(NullFormatter())
-        shown_k = [k for k in (1, 2, 5, 12, 30, 80, 192, 512) if k <= kk.max()]
-        ax.set_xticks(shown_k, [str(k) for k in shown_k])
-        ax.xaxis.set_minor_formatter(NullFormatter())
-        ax.set_xlabel('number of leading principal directions')
-        ax.set_ylabel(f'{r2_name} error [{unit}]')
-        ax.set_title(f'{c.tasks[t]}: {r2_name}\n({len(ho_eps)} held-out episodes; lower is better)', fontsize=9.5)
-        ax.legend(fontsize=8, loc='upper right')
-    fig.suptitle('How much of the robot state a linear readout of the leading latent directions recovers',
-                 fontsize=10.5)
+            def targets(f):
+                return np.degrees(lab['ee_rot'][f])[:, 2:3] if unit == 'deg' else 100 * lab['ee_pos'][f]
+            Y_tr, Y_ho = targets(tr), targets(ho)
+            for j, m in enumerate(models):
+                z_tr, z_ho = m['ev'].encode(tr), m['ev'].encode(ho)
+                mu = z_tr.mean(0)
+                vt = np.linalg.svd(z_tr - mu, full_matrices=False)[2]
+                kk = ks[ks <= vt.shape[0]]
+                err, r2 = [], []
+                for k in kk:
+                    X_tr = np.c_[(z_tr - mu) @ vt[:k].T, np.ones(len(tr))]
+                    X_ho = np.c_[(z_ho - mu) @ vt[:k].T, np.ones(len(ho))]
+                    res = Y_ho - X_ho @ np.linalg.lstsq(X_tr, Y_tr, rcond=None)[0]
+                    err.append(float(np.sqrt((res ** 2).sum(1).mean())))
+                    r2.append(float(1 - res.var(0).sum() / max(Y_ho.var(0).sum(), 1e-12)))
+                ax.plot(kk, err, color=MODEL_COLORS[j], marker='o', ms=3.5, label=m['label'])
+                record.setdefault(c.tasks[t], {})[m['label']] = {
+                    'k': kk.tolist(), f'rmse_{unit}': err, 'r2': r2,
+                    'n_train_episodes': len(eps_of('train')), 'n_heldout_episodes': len(ho_eps)}
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            from matplotlib.ticker import FormatStrFormatter, LogLocator, NullFormatter
+            ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+            ax.yaxis.set_major_formatter(FormatStrFormatter('%g'))
+            ax.yaxis.set_minor_formatter(NullFormatter())
+            shown_k = [k for k in (1, 2, 5, 12, 30, 80, 192, 512) if k <= kk.max()]
+            ax.set_xticks(shown_k, [str(k) for k in shown_k])
+            ax.xaxis.set_minor_formatter(NullFormatter())
+            if r == len(objects) - 1:
+                ax.set_xlabel('number of leading principal directions')
+            ax.set_ylabel(f'{qname} error [{unit}]')
+            ax.set_title(f'{c.tasks[t]} ({len(ho_eps)} held-out episodes)', fontsize=9.5)
+            if r == 0 and col == 1:
+                ax.legend(fontsize=8, loc='upper right')
+    for col in range(2):  # same y-range down each column, so objects compare directly
+        lo = min(ax.get_ylim()[0] for ax in axes[:, col])
+        hi = max(ax.get_ylim()[1] for ax in axes[:, col])
+        for ax in axes[:, col]:
+            ax.set_ylim(lo, hi)
+    fig.suptitle('How much of the robot state a linear readout of the leading latent directions recovers '
+                 '(lower is better)', fontsize=10.5)
     fig.tight_layout()
     save(fig, a.out, 'fig_latent_pc_error')
     with open(os.path.join(a.out, 'latent_pc_error.json'), 'w') as fh:
