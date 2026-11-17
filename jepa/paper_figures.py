@@ -374,6 +374,52 @@ def trajectories_figure(models, a):
         json.dump(record, fh, indent=1)
 
 
+def decoded_figure(models, a, rng):
+    """Decoded vs measured EE height and EE rotation on all test frames, one column per model, using
+    each model's frozen-latent state decoder (<eval>/state_decoder/state_decoder.pt)."""
+    print('figure: decoded vs measured robot state ...', flush=True)
+    ctx = _test_context(models)
+    frames, lab = ctx['frames'], ctx['ev0'].labels
+    height_cm, rot_deg = ctx['pos'][:, 2], ctx['rot'][:, 2]
+    n = len(models)
+    fig, axes = plt.subplots(2, n, figsize=(3.3 * n + 0.4, 6.4), squeeze=False)
+    pts = rng.choice(len(frames), min(2500, len(frames)), replace=False)  # points drawn; RMSE uses all
+    for j, m in enumerate(models):
+        if m['decode'] is None:
+            for ax in axes[:, j]:
+                ax.axis('off')
+            axes[0, j].text(0.5, 0.5, f'{m["label"]}: no state decoder\n(run jepa.state_decode)', ha='center',
+                            va='center', transform=axes[0, j].transAxes, color=INK2)
+            continue
+        dec = m['decode'](m['z'])
+        ax = axes[0, j]
+        yt, yp = height_cm[pts], 100 * dec[pts, 2]
+        lo, hi = np.percentile(np.r_[yt, yp], [1, 99])
+        ax.plot([lo, hi], [lo, hi], color=INK2, lw=1, ls='--')
+        ax.scatter(yt, yp, s=4, color=MODEL_COLORS[j], alpha=0.35, linewidths=0)
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        rmse = float(np.sqrt(((100 * dec[:, 0:3] - 100 * lab['ee_pos'][frames]) ** 2).sum(1).mean()))
+        ax.set_title(f'{m["label"]}: EE height decoded from z\n(3-D position RMSE {rmse:.1f} cm)', fontsize=9)
+        ax.set_xlabel('measured EE height [cm]')
+        if j == 0:
+            ax.set_ylabel('decoded EE height [cm]')
+        ax = axes[1, j]
+        yt, yp = rot_deg[pts], np.degrees(dec[pts, 5])
+        lim = np.percentile(np.abs(np.r_[yt, yp]), 99)
+        ax.plot([-lim, lim], [-lim, lim], color=INK2, lw=1, ls='--')
+        ax.scatter(yt, yp, s=4, color=MODEL_COLORS[j], alpha=0.35, linewidths=0)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        err = float(np.sqrt(((np.degrees(dec[:, 5]) - rot_deg) ** 2).mean()))
+        ax.set_title(f'{m["label"]}: EE rotation decoded from z\n(RMSE {err:.1f} deg)', fontsize=9)
+        ax.set_xlabel('measured EE rotation [deg]')
+        if j == 0:
+            ax.set_ylabel('decoded EE rotation [deg]')
+    fig.tight_layout(h_pad=2.0)
+    save(fig, a.out, 'fig_latent_decoded')
+
+
 def pc_error_figure(models, a):
     """EE position error (pick-and-place task) and EE rotation error (rotate task) of a linear readout
     from the k leading principal directions of the task's latents, one row per object. PCA and the
@@ -510,7 +556,7 @@ def main():
     p.add_argument('--n-tsne', type=int, default=2500, help='points per family in the t-SNE panels')
     p.add_argument('--rollout-steps', type=int, default=40)
     p.add_argument('--seed', type=int, default=0)
-    p.add_argument('--figures', default='organization,summary,lejepa,geometry,trajectories,pc_content,pc_error')
+    p.add_argument('--figures', default='organization,summary,lejepa,geometry,trajectories,pc_content,pc_error,decoded')
     p.add_argument('--queries', default='', help='comma-separated global frame indices for the retrieval '
                    'panel (default: one mid-episode frame per family)')
     p.add_argument('--trajectory-tasks', default='', help='comma-separated task names for fig_latent_trajectories')
@@ -544,6 +590,8 @@ def main():
         geometry_figure(models, a, rng)
     if 'trajectories' in figs:
         trajectories_figure(models, a)
+    if 'decoded' in figs:
+        decoded_figure(models, a, rng)
     if 'pc_error' in figs:
         pc_error_figure(models, a)
     if 'pc_content' in figs:
