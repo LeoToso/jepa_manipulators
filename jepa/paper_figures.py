@@ -577,6 +577,16 @@ def main():
         m['frames'] = ev.episode_frames(c.split_episodes('test'))
         m['z'] = ev.encode(m['frames'])
         m['decode'] = load_state_decoder(os.path.join(m['evals'][0], 'state_decoder', 'state_decoder.pt'), ev.device)
+        # the state decoder was trained on the latents of the model evaluated in that eval dir: refuse to
+        # apply it to a different model (e.g. a seed-1 decoder on the seed-0 run)
+        mfile = os.path.join(m['evals'][0], 'metrics.json')
+        if m['decode'] is not None and os.path.exists(mfile):
+            with open(mfile) as fh:
+                ck = json.load(fh).get('checkpoint')
+            if ck and os.path.realpath(os.path.dirname(ck)) != os.path.realpath(m['run']):
+                print(f'  WARNING {m["label"]}: {m["evals"][0]} evaluated {ck}, not {m["run"]}; its state '
+                      f'decoder does not match this model and is not used. Put the matching eval dir first.')
+                m['decode'] = None
     ev0 = models[0]['ev']
     c, frames, lab = ev0.cache, models[0]['frames'], ev0.labels
     fam = np.array([task_family(c.tasks[t]) for t in ev0.task_of_frame[frames]])
