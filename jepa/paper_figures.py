@@ -281,13 +281,22 @@ def trajectories_figure(models, a):
     rows = _trajectory_rows(ctx, a)
     fig, axes = plt.subplots(len(rows), n + 1, figsize=(3.6 * n + 4.2, 3.4 * len(rows)), squeeze=False,
                              gridspec_kw={'width_ratios': [1] * n + [0.9]})
-    ks = np.array([1, 2, 3, 5, 8, 12, 20, 30, 50])
+    ks = np.array([1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120, 192, 256, 384, 512])
+    ev0, lab = ctx['ev0'], ctx['ev0'].labels
 
-    def fit(F, Yt):
+    def fit(F, Yt, F_te=None, Y_te=None):
         X = np.c_[F, np.ones(len(F))]
-        res = Yt - X @ np.linalg.lstsq(X, Yt, rcond=None)[0]
+        w = np.linalg.lstsq(X, Yt, rcond=None)[0]
+        if F_te is not None:  # evaluate on held-out frames
+            X, Yt = np.c_[F_te, np.ones(len(F_te))], Y_te
+        res = Yt - X @ w
         r2 = 1 - res.var(0).sum() / max(Yt.var(0).sum(), 1e-12)  # fraction of variance explained
         return r2, float(np.sqrt((res ** 2).sum(1).mean()))       # RMS error (3-D norm for position)
+
+    def targets(frames_, unit, Y_cols):
+        if unit == 'deg':
+            return np.degrees(lab['ee_rot'][frames_])[:, 2:3]
+        return 100 * lab['ee_pos'][frames_]
 
     record = {}
 
@@ -302,14 +311,23 @@ def trajectories_figure(models, a):
         for j, m in enumerate(models):
             z = m['z'][idx] - m['z'][idx].mean(0)
             vt = np.linalg.svd(z, full_matrices=False)[2]
-            pcs = z @ vt[:ks.max()].T
-            pc = pcs[:, :2]
+            pc = z @ vt[:2].T
             r2 = fit(pc, Yt)[0]
-            kk = ks[ks <= pcs.shape[1]]
-            fits = [fit(pcs[:, :k], Yt) for k in kk]
+            # error curve: PCA and linear fit on the task's *training* episodes, error on its test episodes
+            tr_frames = ev0.episode_frames([e for e in c.split_episodes('train') if c.episode_task[e] == t])
+            z_tr = m['ev'].encode(tr_frames)
+            mu = z_tr.mean(0)
+            vt_tr = np.linalg.svd(z_tr - mu, full_matrices=False)[2]
+            Y_tr = targets(tr_frames, unit, None)
+            kk = ks[ks <= vt_tr.shape[0]]
+            fits = [fit((z_tr - mu) @ vt_tr[:k].T, Y_tr, (m['z'][idx] - mu) @ vt_tr[:k].T, Yt) for k in kk]
+            fits_in = [fit((z_tr - mu) @ vt_tr[:k].T, Y_tr) for k in kk]
             axes[r, n].plot(kk, [f[1] for f in fits], color=MODEL_COLORS[j], marker='o', ms=3, label=m['label'])
+            axes[r, n].plot(kk, [f[1] for f in fits_in], color=MODEL_COLORS[j], lw=1, ls=':', alpha=0.8)
             record.setdefault(c.tasks[t], {})[m['label']] = {
-                'k': kk.tolist(), 'r2': [f[0] for f in fits], f'rmse_{unit}': [f[1] for f in fits]}
+                'k': kk.tolist(), 'r2_test': [f[0] for f in fits], f'rmse_{unit}_test': [f[1] for f in fits],
+                'r2_train': [f[0] for f in fits_in], f'rmse_{unit}_train': [f[1] for f in fits_in],
+                'n_train_frames': int(len(tr_frames)), 'n_test_frames': int(len(idx))}
             ax = axes[r, j]
             for e in np.unique(ep[idx]):
                 k = ep[idx] == e
@@ -336,9 +354,11 @@ def trajectories_figure(models, a):
         ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
         ax.yaxis.set_major_formatter(FormatStrFormatter('%g'))
         ax.yaxis.set_minor_formatter(NullFormatter())
-        ax.set_xticks(ks, [str(k) for k in ks])
-        ax.set_xlabel('number of leading PCs (of this task\'s latents)', fontsize=8)
-        ax.set_ylabel(f'{r2_name} error [{unit}] (linear fit)', fontsize=8)
+        shown_k = [k for k in (1, 2, 5, 12, 30, 80, 192, 512) if k <= kk.max()]
+        ax.set_xticks(shown_k, [str(k) for k in shown_k])
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlabel('number of leading PCs (fit on train episodes)', fontsize=8)
+        ax.set_ylabel(f'{r2_name} error [{unit}], test episodes\n(dotted: on the fitting frames)', fontsize=8)
         ax.set_title(f'{r2_name} left unexplained by the\nleading principal directions (lower is better)',
                      fontsize=9)
         if r == 0:
