@@ -384,6 +384,7 @@ def decoded_figure(models, a, rng):
     n = len(models)
     fig, axes = plt.subplots(2, n, figsize=(3.3 * n + 0.4, 6.4), squeeze=False)
     pts = rng.choice(len(frames), min(2500, len(frames)), replace=False)  # points drawn; RMSE uses all
+    record = {}
     for j, m in enumerate(models):
         if m['decode'] is None:
             for ax in axes[:, j]:
@@ -400,7 +401,7 @@ def decoded_figure(models, a, rng):
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
         rmse = float(np.sqrt(((100 * dec[:, 0:3] - 100 * lab['ee_pos'][frames]) ** 2).sum(1).mean()))
-        ax.set_title(f'{m["label"]}: EE height decoded from z\n(3-D position RMSE {rmse:.1f} cm)', fontsize=9)
+        ax.set_title(f'{m["label"]}: EE height decoded from z', fontsize=9)
         ax.set_xlabel('measured EE height [cm]')
         if j == 0:
             ax.set_ylabel('decoded EE height [cm]')
@@ -412,12 +413,16 @@ def decoded_figure(models, a, rng):
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         err = float(np.sqrt(((np.degrees(dec[:, 5]) - rot_deg) ** 2).mean()))
-        ax.set_title(f'{m["label"]}: EE rotation decoded from z\n(RMSE {err:.1f} deg)', fontsize=9)
+        ax.set_title(f'{m["label"]}: EE rotation decoded from z', fontsize=9)
+        record[m['label']] = {'ee_pos_rmse_cm': rmse, 'ee_rot_rmse_deg': err}
+        print(f'  {m["label"]}: 3-D position RMSE {rmse:.2f} cm, rotation RMSE {err:.2f} deg')
         ax.set_xlabel('measured EE rotation [deg]')
         if j == 0:
             ax.set_ylabel('decoded EE rotation [deg]')
     fig.tight_layout(h_pad=2.0)
     save(fig, a.out, 'fig_latent_decoded')
+    with open(os.path.join(a.out, 'latent_decoded.json'), 'w') as fh:
+        json.dump(record, fh, indent=1)
 
 
 def pc_error_figure(models, a):
