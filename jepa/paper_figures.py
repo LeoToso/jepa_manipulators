@@ -436,6 +436,8 @@ def pc_error_figure(models, a):
     ks = np.array([1, 2, 3, 5, 8, 12, 16, 20, 25, 30, 40, 50, 60, 80, 100, 120, 140, 160, 192, 256, 384, 512])
     objects = [t[len('rotate_'):] for t in c.tasks if t.startswith('rotate_')
                and f'pick_and_place_{t[len("rotate_"):]}' in c.tasks]
+    if a.pc_objects:
+        objects = [o for o in a.pc_objects.split(',') if o in objects]
     cols = (('pick_and_place', '3-D EE position', 'cm'), ('rotate', 'EE rotation', 'deg'))
     fig, axes = plt.subplots(len(objects), 2, figsize=(9.6, 3.3 * len(objects)), squeeze=False)
     record = {}
@@ -564,6 +566,8 @@ def main():
     p.add_argument('--figures', default='organization,summary,lejepa,geometry,trajectories,pc_content,pc_error,decoded')
     p.add_argument('--queries', default='', help='comma-separated global frame indices for the retrieval '
                    'panel (default: one mid-episode frame per family)')
+    p.add_argument('--pc-objects', default='', help='comma-separated objects (rows) for fig_latent_pc_error, '
+                   'e.g. banana,orange (default: all)')
     p.add_argument('--trajectory-tasks', default='', help='comma-separated task names for fig_latent_trajectories')
     a = p.parse_args()
     figs = set(a.figures.split(','))
