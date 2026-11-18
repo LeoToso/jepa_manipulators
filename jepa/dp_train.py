@@ -44,7 +44,7 @@ class FrameDataset(Dataset):
                'act': torch.from_numpy(pd.normalize(pd.actions[pd.action_rows(t)[0]]))}
         if self.goal_cond:
             g = pd.sample_goal_frames(t, self.rng)[0]
-            out['goal'] = torch.from_numpy(np.ascontiguousarray(c.images[g]).transpose(2, 0, 1))
+            out['goal'] = torch.from_numpy(np.array(c.images[g]).transpose(2, 0, 1).copy())
         return out
 
 
