@@ -215,3 +215,29 @@ python view_episode.py Dataset/<file>.h5 --episode all --png
 python extract_frames.py Dataset/<file>.h5 --episode 0 --num 10
 python franka_dataset.py check-quat Dataset               # quaternion order (wxyz on this robot)
 ```
+
+
+## Diffusion Policy steered by a world model (offline)
+
+`jepa.dp_train` trains a Diffusion Policy (Chi et al. 2023, CNN variant: ResNet-18 with GroupNorm,
+1-D temporal U-Net, DDPM training / DDIM sampling, EMA) on the train split of the same cache. It
+sees two observation steps (frames t-2 and t, proprio [q, dq, gripper]) and the task id, and
+predicts the next 16 per-step actions [dpos, drot, gripper] (1.6 s), the same `delta_next`
+quantity the world models are trained on.
+
+    python -m jepa.dp_train --cache /mnt/t7shield/cache_jepa_128 --out runs/dp --amp
+
+`jepa.dp_eval` evaluates it on held-out episodes (val + test): at every 8th frame the policy
+proposes N = 32 chunks; each world model rolls them out from the current latent and keeps the one
+whose predicted end state is closest to a goal image (latent distance; successor models also by
+goal value). Chosen chunks are compared with the recorded actions (end-point position / rotation
+error, gripper errors), against the policy alone, a world-model-free consensus choice and the best
+possible choice among the N candidates. Goals: the episode's final frame (deployment setting),
+a subgoal K latent steps ahead, and the frame at the end of the chunk (oracle, an upper bound).
+
+    python -m jepa.dp_eval --dp runs/dp --cache /mnt/t7shield/cache_jepa_128 --out eval/dp_steer \
+        --model "MSP+SIG=runs/msp_sigreg" --model "MSP+GCB+SIG=runs/msp_gcb_sigreg" \
+        --model "MSP+SIG+SF=runs/msp_sigreg_sf_lam10"
+
+Writes summary.md/json, fig_steer_<goal> (error along the episode, per family) and
+fig_steer_summary; `--replot` redraws the figures from results.npz.
