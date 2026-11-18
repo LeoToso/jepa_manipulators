@@ -274,7 +274,10 @@ class Cache:
         return eps
 
     def actions(self, mode):
-        """(N, 7) per-step actions for every frame, computed episode by episode."""
+        """(N, A) per-step actions for every frame, computed episode by episode (A = 7), or the
+        actions stored in the cache for mode 'stored' (e.g. OGBench's 5-d actions)."""
+        if mode == 'stored':
+            return self.low['actions'].astype(np.float32)
         out = np.zeros((len(self.episode_of_frame), ACTION_DIM), dtype=np.float32)
         for e, (s, n) in enumerate(zip(self.starts, self.lengths)):
             sl = slice(s, s + n)
@@ -339,12 +342,13 @@ class WindowDataset(Dataset):
     def __init__(self, cache, split, horizon=3, frame_skip=2, action_mode='delta_next',
                  stats=None, return_goal=False, goal_geom_p=0.3, goal_max_offset=30,
                  tasks=None, start_stride=1, seed=0, action_norm='scale', proprio=None,
-                 goal_uniform_frac=0.0, goal_final_frac=0.0):
+                 goal_uniform_frac=0.0, goal_final_frac=0.0, goal_uniform_max=None):
         self.cache = cache
         # goal offset mixture: with goal_final_frac the episode's last frame, with goal_uniform_frac a
         # uniform offset up to the episode end, otherwise Geometric(goal_geom_p) capped at
         # goal_max_offset (the default: only near goals)
         self.goal_uniform_frac, self.goal_final_frac = float(goal_uniform_frac), float(goal_final_frac)
+        self.goal_uniform_max = None if goal_uniform_max is None else int(goal_uniform_max)
         self.H, self.fs = int(horizon), int(frame_skip)
         self.return_goal = bool(return_goal)
         self.goal_geom_p = float(goal_geom_p)
@@ -376,11 +380,14 @@ class WindowDataset(Dataset):
         return len(self.index)
 
     def _state(self, frame):
-        """Measured [EE position (3), quaternion w-x-y-z (4), gripper (1)] of one frame."""
+        """Measured [EE position (3), quaternion w-x-y-z (4), gripper (1)] of one frame, followed by
+        the object position (3) when the cache has one (OGBench: the cube)."""
         low = self.cache.low
         q = to_wxyz(low['x_ee'][frame, 3:7].astype(np.float64), self.cache.quat_order)
-        return torch.from_numpy(np.concatenate([low['x_ee'][frame, :3], q, low['gripper'][frame, :1]])
-                                .astype(np.float32))
+        parts = [low['x_ee'][frame, :3], q, low['gripper'][frame, :1]]
+        if 'obj_pos' in low:
+            parts.append(low['obj_pos'][frame, :3])
+        return torch.from_numpy(np.concatenate(parts).astype(np.float32))
 
     def _frames(self, idx):
         return torch.from_numpy(np.ascontiguousarray(self.cache.images[idx])).permute(0, 3, 1, 2)
@@ -408,7 +415,8 @@ class WindowDataset(Dataset):
             if k_avail >= 1 and u < self.goal_final_frac:
                 k = k_avail
             elif k_avail >= 1 and u < self.goal_final_frac + self.goal_uniform_frac:
-                k = int(self.rng.randint(1, k_avail + 1))
+                hi = k_avail if self.goal_uniform_max is None else min(k_avail, self.goal_uniform_max)
+                k = int(self.rng.randint(1, hi + 1))
             else:
                 k = min(int(self.rng.geometric(self.goal_geom_p)), self.goal_max_offset, k_avail)
             g = start + k * self.fs

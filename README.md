@@ -271,3 +271,20 @@ Side-by-side drift figure of two evaluations (e.g. subgoal provided vs final goa
     python -m jepa.dp_eval --dp x --cache x --out eval/fig_pair \
         --pair "eval/dp_steer4:subgoal10:subgoal 2 s ahead provided" \
         --pair "eval/dp_final:gated10:final goal photo only"
+
+## OGBench cube (simulation)
+
+Everything above also runs on OGBench's visual cube environments (UR5e arm, 64 x 64 pixels, 5-d
+actions [dx, dy, dz, dyaw, dgripper]), where planning can be evaluated closed-loop by OGBench's
+own success criterion. Install (MuJoCo rendering on a GPU server: `MUJOCO_GL=egl`):
+
+    pip install ogbench          # mujoco >= 3.1.6, dm_control, gymnasium
+
+Data: `jepa.ogb_data download` (the official `visual-cube-single-play-v0`, 1000 episodes x 1001
+steps) or `jepa.ogb_data collect` (the same scripted play oracle), then `jepa.ogb_data convert`
+into the usual cache (pixels, proprio and cube positions from qpos/qvel, stored actions).
+World models: `configs/ogb/{msp_sigreg,msp_gcb_sigreg,msp_sigreg_sf}.yaml` (pixels only, since
+goals are images; GCB's state reward includes the cube). Policy: `jepa.dp_train --goal-cond
+--action-mode stored` (goal-conditioned, hindsight goal images). Evaluation: `jepa.ogb_eval` runs
+OGBench's 5 tasks closed-loop with the policy alone, consensus, and each world model choosing among
+the policy's candidates, and reports success rates (summary.md, fig_success.png, optional GIFs).

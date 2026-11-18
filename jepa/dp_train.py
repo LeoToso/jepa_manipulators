@@ -25,9 +25,10 @@ from jepa.policy import DiffusionPolicy, PolicyData
 
 
 class FrameDataset(Dataset):
-    def __init__(self, pdata, episodes):
+    def __init__(self, pdata, episodes, goal_cond=False, seed=0):
         c = pdata.c
-        self.pd = pdata
+        self.pd, self.goal_cond = pdata, goal_cond
+        self.rng = np.random.RandomState(seed)
         self.frames = np.concatenate([np.arange(c.starts[e], c.starts[e] + c.lengths[e]) for e in episodes])
 
     def __len__(self):
@@ -38,9 +39,13 @@ class FrameDataset(Dataset):
         pd, c = self.pd, self.pd.c
         f = pd.obs_frames(t)[0]
         img = np.ascontiguousarray(c.images[f]).transpose(0, 3, 1, 2)          # (2, 3, S, S) uint8
-        return {'img': torch.from_numpy(img), 'prop': torch.from_numpy(pd.proprio[f]),
-                'task': int(c.episode_task[c.episode_of_frame[t[0]]]),
-                'act': torch.from_numpy(pd.normalize(pd.actions[pd.action_rows(t)[0]]))}
+        out = {'img': torch.from_numpy(img), 'prop': torch.from_numpy(pd.proprio[f]),
+               'task': int(c.episode_task[c.episode_of_frame[t[0]]]),
+               'act': torch.from_numpy(pd.normalize(pd.actions[pd.action_rows(t)[0]]))}
+        if self.goal_cond:
+            g = pd.sample_goal_frames(t, self.rng)[0]
+            out['goal'] = torch.from_numpy(np.ascontiguousarray(c.images[g]).transpose(2, 0, 1))
+        return out
 
 
 def main():
@@ -58,6 +63,10 @@ def main():
     p.add_argument('--amp', action='store_true', help='bfloat16 autocast')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--action-mode', default='delta_next', help="'stored' for OGBench (its recorded 5-d actions)")
+    p.add_argument('--proprio-keys', default='q,dq,gripper')
+    p.add_argument('--goal-cond', action='store_true', help='condition on a goal image (hindsight goals)')
+    p.add_argument('--goal-p', type=float, default=0.01, help='hindsight goal offset ~ Geometric(p) frames')
     a = p.parse_args()
     torch.manual_seed(a.seed)
     np.random.seed(a.seed)
@@ -66,16 +75,17 @@ def main():
 
     c = Cache(a.cache)
     tr_eps, va_eps = c.split_episodes('train'), c.split_episodes('val')
-    pdata = PolicyData(c, a.horizon, a.obs_skip, train_episodes=tr_eps)
-    train = DataLoader(FrameDataset(pdata, tr_eps), batch_size=a.batch, shuffle=True, drop_last=True,
+    pdata = PolicyData(c, a.horizon, a.obs_skip, a.proprio_keys.split(','), train_episodes=tr_eps,
+                       action_mode=a.action_mode, goal_p=a.goal_p)
+    train = DataLoader(FrameDataset(pdata, tr_eps, a.goal_cond, a.seed), batch_size=a.batch, shuffle=True, drop_last=True,
                        num_workers=a.workers, worker_init_fn=worker_init_fn, pin_memory=dev.type == 'cuda',
                        persistent_workers=a.workers > 0)
-    val_set = FrameDataset(pdata, va_eps)
+    val_set = FrameDataset(pdata, va_eps, a.goal_cond, 1)
     rng = np.random.RandomState(0)
     val_idx = rng.choice(len(val_set), min(2048, len(val_set)), replace=False)
 
     pol = DiffusionPolicy(n_tasks=len(c.tasks), proprio_dim=pdata.proprio.shape[1], horizon=a.horizon,
-                          image_size=c.images.shape[1],
+                          image_size=c.images.shape[1], action_dim=pdata.actions.shape[1], goal_cond=a.goal_cond,
                           down_dims=tuple(int(x) for x in a.down_dims.split(','))).to(dev)
     ema = copy.deepcopy(pol).eval()
     for q in ema.parameters():
@@ -107,13 +117,14 @@ def main():
             items = [val_set[j] for j in val_idx[i:i + 256]]
             b = {k: (torch.stack([it[k] for it in items]) if k != 'task' else torch.tensor([it[k] for it in items]))
                  for k in items[0]}
-            tot += float(ema.loss(b['img'].to(dev), b['prop'].to(dev), b['task'].to(dev), b['act'].to(dev))) * len(items)
+            tot += float(ema.loss(b['img'].to(dev), b['prop'].to(dev), b['task'].to(dev), b['act'].to(dev),
+                                  b['goal'].to(dev) if 'goal' in b else None)) * len(items)
         torch.random.set_rng_state(g)
         return tot / len(val_idx)
 
     def save():
         state = {'config': pol.cfg, 'stats': pdata.stats, 'tasks': list(c.tasks), 'obs_skip': a.obs_skip,
-                 'step': step}
+                 'step': step, 'action_mode': a.action_mode, 'goal_p': a.goal_p}
         torch.save(dict(state, ema=ema.state_dict()), os.path.join(a.out, 'policy.pt'))
         torch.save(dict(state, model=pol.state_dict(), ema=ema.state_dict(), opt=opt.state_dict(),
                         sched=sched.state_dict()), last)
@@ -131,7 +142,8 @@ def main():
         for b in train:
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=a.amp):
                 loss = pol.loss(b['img'].to(dev, non_blocking=True), b['prop'].to(dev, non_blocking=True),
-                                b['task'].to(dev), b['act'].to(dev, non_blocking=True))
+                                b['task'].to(dev), b['act'].to(dev, non_blocking=True),
+                                b['goal'].to(dev, non_blocking=True) if 'goal' in b else None)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(pol.parameters(), 1.0)

@@ -125,7 +125,8 @@ def main():
     if list(c.tasks) != list(ck['tasks']):
         raise SystemExit(f'task list of the cache {c.tasks} differs from the policy {ck["tasks"]}')
     H = pol.horizon
-    pd = PolicyData(c, H, ck['obs_skip'], ck['stats']['proprio_keys'], stats=ck['stats'])
+    pd = PolicyData(c, H, ck['obs_skip'], ck['stats']['proprio_keys'], stats=ck['stats'],
+                    action_mode=ck.get('action_mode', 'delta_next'))
     eps = [e for s in a.splits.split(',') for e in c.split_episodes(s)]
     T = np.concatenate([np.arange(c.starts[e], c.starts[e] + c.lengths[e] - 1, a.stride) for e in eps])
     n = len(T)

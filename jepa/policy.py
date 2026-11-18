@@ -155,22 +155,30 @@ def squared_cosine_alphas_cumprod(n, s=0.008):
 
 class DiffusionPolicy(nn.Module):
     def __init__(self, n_tasks, proprio_dim, action_dim=7, horizon=16, n_obs=2, image_size=128,
-                 crop=0.9, vision_dim=512, task_dim=32, down_dims=(128, 256, 512), train_steps=100):
+                 crop=0.9, vision_dim=512, task_dim=32, down_dims=(128, 256, 512), train_steps=100,
+                 goal_cond=False):
         super().__init__()
         self.cfg = dict(n_tasks=n_tasks, proprio_dim=proprio_dim, action_dim=action_dim, horizon=horizon,
                         n_obs=n_obs, image_size=image_size, crop=crop, vision_dim=vision_dim,
-                        task_dim=task_dim, down_dims=list(down_dims), train_steps=train_steps)
+                        task_dim=task_dim, down_dims=list(down_dims), train_steps=train_steps,
+                        goal_cond=bool(goal_cond))
+        self.goal_cond = bool(goal_cond)
         self.horizon, self.action_dim, self.n_obs = horizon, action_dim, n_obs
         self.crop_size = int(round(crop * image_size))
         self.vision = ResNet18GN(vision_dim)
         self.task_emb = nn.Embedding(n_tasks, task_dim)
-        cond_dim = n_obs * (vision_dim + proprio_dim) + task_dim
+        cond_dim = n_obs * (vision_dim + proprio_dim) + task_dim + (vision_dim if goal_cond else 0)
         self.unet = ConditionalUnet1D(action_dim, cond_dim, tuple(down_dims))
         self.train_steps = train_steps
         self.register_buffer('alphas_cumprod', squared_cosine_alphas_cumprod(train_steps))
 
-    def encode_obs(self, images, proprio, task):
-        """images: (B, n_obs, 3, S, S) uint8; proprio: (B, n_obs, P) normalized; task: (B,) -> (B, C)."""
+    def encode_obs(self, images, proprio, task, goal=None):
+        """images: (B, n_obs, 3, S, S) uint8; proprio: (B, n_obs, P) normalized; task: (B,);
+        goal: (B, 3, S, S) uint8 goal image (goal-conditioned policies) -> (B, C)."""
+        if self.goal_cond:
+            if goal is None:
+                raise ValueError('this policy is goal-conditioned: pass the goal image')
+            images = torch.cat([images, goal[:, None]], dim=1)
         x = images.float() / 255.0
         x = self._crop_batch(x)
         b, n = x.shape[:2]
@@ -189,9 +197,9 @@ class DiffusionPolicy(nn.Module):
         j = torch.randint(0, s - c + 1, (b,)).tolist()
         return torch.stack([x[k, ..., i[k]:i[k] + c, j[k]:j[k] + c] for k in range(b)])
 
-    def loss(self, images, proprio, task, actions):
+    def loss(self, images, proprio, task, actions, goal=None):
         """actions: (B, T, A) normalized to [-1, 1]. Epsilon-prediction DDPM loss."""
-        cond = self.encode_obs(images, proprio, task)
+        cond = self.encode_obs(images, proprio, task, goal)
         b = actions.shape[0]
         t = torch.randint(0, self.train_steps, (b,), device=actions.device)
         ac = self.alphas_cumprod[t][:, None, None]
@@ -225,9 +233,10 @@ class PolicyData:
     """Observation / action-chunk access on the cache, with the normalizations of training."""
 
     def __init__(self, cache, horizon=16, obs_skip=2, proprio_keys=('q', 'dq', 'gripper'), stats=None,
-                 train_episodes=None):
+                 train_episodes=None, action_mode='delta_next', goal_p=0.01):
         self.c, self.horizon, self.obs_skip = cache, horizon, obs_skip
-        self.actions = cache.actions('delta_next')
+        self.action_mode, self.goal_p = action_mode, float(goal_p)
+        self.actions = cache.actions(action_mode)
         self.proprio_raw = proprio_array(cache, list(proprio_keys))
         if stats is None:
             rows = np.concatenate([np.arange(cache.starts[e], cache.starts[e] + cache.lengths[e] - 1)
@@ -261,6 +270,15 @@ class PolicyData:
         t = np.asarray(t)
         return np.minimum(t[:, None] + np.arange(self.horizon)[None], self.ep_end[t][:, None])
 
+    def sample_goal_frames(self, t, rng):
+        """Hindsight goals for goal-conditioned training: a later frame of the same episode,
+        k ~ Geometric(goal_p) frames ahead (mean 1/goal_p), clipped to the episode end."""
+        t = np.asarray(t)
+        return np.minimum(t + rng.geometric(self.goal_p, size=t.shape), self.ep_end[t])
+
+    def goal_images(self, g):
+        return torch.from_numpy(np.ascontiguousarray(self.c.images[np.asarray(g)])).permute(0, 3, 1, 2)
+
     def batch(self, t, device):
         f = self.obs_frames(t)
         img = torch.from_numpy(np.ascontiguousarray(self.c.images[f.reshape(-1)])).reshape(
@@ -276,7 +294,7 @@ def load_policy(path, device):
     ck = torch_load(path, device)
     cfg = dict(ck['config'])
     cfg['down_dims'] = tuple(cfg['down_dims'])
-    pol = DiffusionPolicy(**cfg).to(device)
+    pol = DiffusionPolicy(**{k: v for k, v in cfg.items()}).to(device)
     pol.load_state_dict(ck['ema'] if 'ema' in ck else ck['model'])
     pol.eval()
     return pol, ck

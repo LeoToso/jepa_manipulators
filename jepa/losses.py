@@ -103,7 +103,10 @@ def gcb_reward(kind, goal_offset, next_state=None, goal_state=None, z_next=None,
         dot = (next_state[:, 3:7] * goal_state[:, 3:7]).sum(-1).abs().clamp(max=1.0)
         drot = 2 * torch.acos(dot)
         dgrip = (next_state[:, 7] - goal_state[:, 7]).abs()
-        sp, sq, sg = state_scales
+        sp, sq, sg = state_scales[:3]
+        if next_state.shape[1] > 8:  # object positions (OGBench cubes, 3 each), same scale as the EE position
+            dobj = (next_state[:, 8:] - goal_state[:, 8:]).reshape(len(next_state), -1, 3).norm(dim=-1).mean(-1)
+            return -(dpos / sp + drot / sq + dgrip / sg + dobj / sp) / 4
         return -(dpos / sp + drot / sq + dgrip / sg) / 3
     if kind == 'latent_distance':
         # on the sphere-projected latent: bounded and independent of the latent's scale. On the

@@ -1,0 +1,22 @@
+# OGBench visual cube: MSP + SIGReg + successor features (lambda_sf = 10 as the Franka runs).
+# gamma 0.98: value horizon ~50 latent steps (100 env steps), the scale of an evaluation episode.
+inherit: ../msp_sigreg_sf.yaml
+data:
+  action_mode: stored        # OGBench's recorded 5-d actions [dx, dy, dz, dyaw, dgripper] in [-1, 1]
+  action_norm: scale
+  frame_skip: 2              # 1 latent step = 2 env steps; action chunk = 2 x 5
+  horizon: 3
+  start_stride: 4            # 1M training frames: windows every 4th frame keep an epoch manageable
+  val_start_stride: 16
+  goal_geom_p: 0.1           # hindsight goals (GCB / SF): near goals, mean 10 latent steps (20 env steps) ...
+  goal_max_offset: 100
+  goal_uniform_frac: 0.25    # ... plus 25% uniform up to 100 latent steps (200 env steps = an evaluation episode)
+  goal_uniform_max: 100
+model:
+  image_size: 64             # OGBench visual observations are 64 x 64
+  patch_size: 8
+  use_proprio: false         # pixels only: OGBench goals are images (no goal proprio), and its agents see pixels
+training:
+  epochs: 30
+  lambda_sf: 10.0
+  sf_gamma: 0.98

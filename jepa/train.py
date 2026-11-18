@@ -24,7 +24,7 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
-from jepa.data import ACTION_DIM, Cache, WindowDataset, action_stats, proprio_stats, worker_init_fn
+from jepa.data import Cache, WindowDataset, action_stats, proprio_stats, worker_init_fn
 from jepa.losses import compute_losses
 from jepa.models import WorldModel, torch_load
 from jepa.probes import ridge_classify, ridge_r2
@@ -59,6 +59,7 @@ def make_loaders(cache, cfg, batch_size, num_workers, seed):
                   stats=stats, return_goal=bool(mc.get('use_gcb', False) or mc.get('use_successor', False)),
                   goal_geom_p=dc.get('goal_geom_p', 0.3), goal_max_offset=dc.get('goal_max_offset', 30),
                   goal_uniform_frac=dc.get('goal_uniform_frac', 0.0), goal_final_frac=dc.get('goal_final_frac', 0.0),
+                  goal_uniform_max=dc.get('goal_uniform_max'),
                   tasks=tasks, proprio=pstats)
     train = WindowDataset(cache, 'train', start_stride=dc.get('start_stride', 1), seed=seed, **common)
     val = WindowDataset(cache, 'val', start_stride=dc.get('val_start_stride', 4), seed=seed + 1, **common)
@@ -163,7 +164,7 @@ def main():
         print(f'[proprio] {pstats["keys"]} -> {mc["proprio_dim"]}-d, fused with the CLS feature')
     with open(os.path.join(args.save_dir, 'config.yaml'), 'w') as fh:  # now with proprio_dim
         yaml.safe_dump(cfg, fh, sort_keys=False)
-    action_dim = ACTION_DIM * int(dc['frame_skip'])
+    action_dim = len(stats['std']) * int(dc['frame_skip'])  # per-step action dim (7 Franka, 5 OGBench)
     model = WorldModel(mc, action_dim).to(device)
     n_params = sum(q.numel() for q in model.parameters() if q.requires_grad)
     print(f'[data] tasks={cache.tasks} train_windows={len(train_loader.dataset)} '

@@ -1,0 +1,22 @@
+# OGBench visual cube: MSP + GCB + SIGReg. The state-distance reward includes the cube position.
+inherit: ../msp_gcb_sigreg.yaml
+data:
+  action_mode: stored        # OGBench's recorded 5-d actions [dx, dy, dz, dyaw, dgripper] in [-1, 1]
+  action_norm: scale
+  frame_skip: 2              # 1 latent step = 2 env steps; action chunk = 2 x 5
+  horizon: 3
+  start_stride: 4            # 1M training frames: windows every 4th frame keep an epoch manageable
+  val_start_stride: 16
+  goal_geom_p: 0.1           # hindsight goals (GCB / SF): near goals, mean 10 latent steps (20 env steps) ...
+  goal_max_offset: 100
+  goal_uniform_frac: 0.25    # ... plus 25% uniform up to 100 latent steps (200 env steps = an evaluation episode)
+  goal_uniform_max: 100
+model:
+  image_size: 64             # OGBench visual observations are 64 x 64
+  patch_size: 8
+  use_proprio: false         # pixels only: OGBench goals are images (no goal proprio), and its agents see pixels
+training:
+  epochs: 30
+  gcb_state_scales: [0.05, 0.5, 1.0]   # metres, radians, gripper opening range [0, 1]
+  gcb_reward_scale: 2.0      # rewards here (EE + cube, yaw over a full turn) are ~5x larger than on the Franka;
+                             # 2.0 keeps the metric, hence the latent, at the same scale as reward_scale 10 there
