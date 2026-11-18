@@ -252,3 +252,11 @@ errors relative to the hand motion per chunk and at the critical moments (chunks
 opens or closes; the end of rotate episodes). fig_steer_drift_<goal> executes the first --stride
 actions of every chosen chunk one after another over the whole episode without feedback and plots
 the accumulated gap to the recorded hand pose (a pessimistic view of compounding error).
+
+Deployable goals (no information from the test episode beyond the final goal frame):
+`nnK` retrieves, in each model's own latent, the --nn-k (5) training states of the same task
+nearest to the current one (one per demonstration) and uses what each demonstration reached K
+latent steps later as subgoals (cost averaged over them). `gatedK` steers towards the final frame
+only when it is within reach (latent distance below the --gate-pct percentile of K-step
+distances in training) and otherwise uses the policy alone; `hybridK` uses the final frame when
+near and the retrieved subgoals otherwise.

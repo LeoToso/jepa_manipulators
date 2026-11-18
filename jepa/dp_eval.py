@@ -89,7 +89,13 @@ def main():
     p.add_argument('--n-samples', type=int, default=32)
     p.add_argument('--ddim-steps', type=int, default=16)
     p.add_argument('--stride', type=int, default=8, help='evaluate every stride-th frame')
-    p.add_argument('--goals', default='final,subgoal15,oracle')
+    p.add_argument('--goals', default='final,subgoal15,oracle',
+                   help='final | oracle | subgoalK (own future) | demoK (another demonstration) | nnK '
+                        '(retrieved from the nearest training states) | gatedK (final goal when within K '
+                        'latent steps, else policy alone) | hybridK (final when near, else nnK)')
+    p.add_argument('--nn-k', type=int, default=5, help='demonstrations retrieved for nnK / hybridK goals')
+    p.add_argument('--gate-pct', type=float, default=75.0,
+                   help='gatedK / hybridK: percentile of K-step latent distances that counts as "within reach"')
     p.add_argument('--splits', default='val,test')
     p.add_argument('--batch-states', type=int, default=64)
     p.add_argument('--device', default='cuda')
@@ -185,7 +191,7 @@ def main():
             return np.minimum(T + H, ep_end)
         if name.startswith('subgoal') or name.startswith('demo'):
             return None  # needs the model's frame_skip
-        if name.startswith('subgoal') or name.startswith('demo'):
+        if name.startswith(('subgoal', 'demo', 'nn', 'gated', 'hybrid')):
             return None
         raise SystemExit(f'unknown goal {name!r}')
 
@@ -218,24 +224,118 @@ def main():
         frame_skip = ev.fs
         print(f'{label}: rolled out {n * N} chunks ({H // ev.fs} latent steps)'
               + (' [successor value available]' if has_sf else ''), flush=True)
+        def sf_values(zg):
+            """(n, N) goal values of the predicted end latents; zg (n, d) or (n, k, d) (mean over k)."""
+            zg3 = zg[:, None] if zg.ndim == 2 else zg
+            out_v = np.zeros((n, N), np.float32)
+            with torch.no_grad():
+                for i in range(0, n, 64):
+                    zz = torch.from_numpy(zhat[i:i + 64]).to(ev.device)                     # (b, N, d)
+                    for j in range(zg3.shape[1]):
+                        gg = torch.from_numpy(zg3[i:i + 64, j]).to(ev.device)[:, None].expand_as(zz)
+                        out_v[i:i + 64] += ev.model.goal_value(
+                            zz.reshape(-1, zz.shape[-1]), gg.reshape(-1, gg.shape[-1])).reshape(zz.shape[:2]).float().cpu().numpy()
+            return out_v / zg3.shape[1]
+
+        def dist_cost(zg):
+            zg3 = zg[:, None] if zg.ndim == 2 else zg
+            return np.stack([((zhat - zg3[:, None, j]) ** 2).mean(-1) for j in range(zg3.shape[1])]).mean(0)
+
+        cache_goal = {}
+
+        def retrieval_goals(K):
+            """(n, k, d): for each state, the k training frames of the same task nearest to z_t in this
+            model's latent (at most one per demonstration), each advanced by K latent steps in its own
+            demonstration. Uses only training data, so it is deployable."""
+            key = f'nn{K}'
+            if key in cache_goal:
+                return cache_goal[key]
+            if 'train' not in cache_goal:
+                tf = ev.episode_frames(c.split_episodes('train'))
+                cache_goal['train'] = (tf, ev.encode(tf))
+            tf, ztr = cache_goal['train']
+            tf_ep = c.episode_of_frame[tf]
+            tf_task = c.episode_task[tf_ep]
+            out_g = np.zeros((n, a.nn_k, z0.shape[1]), np.float32)
+            for ti in np.unique(task):
+                si = np.flatnonzero(task == ti)
+                fi = np.flatnonzero(tf_task == ti)
+                d = (z0[si] ** 2).sum(1)[:, None] + (ztr[fi] ** 2).sum(1)[None] - 2 * z0[si] @ ztr[fi].T
+                eps_t = np.unique(tf_ep[fi])
+                best_f = np.zeros((len(si), len(eps_t)), np.int64)
+                best_d = np.zeros((len(si), len(eps_t)))
+                for j, e in enumerate(eps_t):
+                    cols = np.flatnonzero(tf_ep[fi] == e)
+                    am = d[:, cols].argmin(1)
+                    best_f[:, j] = fi[cols[am]]
+                    best_d[:, j] = d[np.arange(len(si)), cols[am]]
+                pick = np.argsort(best_d, 1)[:, :a.nn_k]
+                nb = np.take_along_axis(best_f, pick, 1)                                   # rows of tf
+                gframe = np.minimum(tf[nb] + K * ev.fs, pd.ep_end[tf[nb]])
+                lookup = {int(f): i for i, f in enumerate(tf)}
+                out_g[si] = ztr[np.vectorize(lookup.get)(gframe)]
+            cache_goal[key] = out_g
+            return out_g
+
+        def gate_open(K):
+            """Steer towards the final frame only when it is within reach: latent distance from z_t to
+            the final frame below the --gate-pct percentile of distances between training frames K
+            latent steps apart in the same task (calibrated per task, training data only)."""
+            key = f'gate{K}'
+            if key in cache_goal:
+                return cache_goal[key]
+            if 'train' not in cache_goal:
+                tf = ev.episode_frames(c.split_episodes('train'))
+                cache_goal['train'] = (tf, ev.encode(tf))
+            tf, ztr = cache_goal['train']
+            pos_of = {int(f): i for i, f in enumerate(tf)}
+            nxt = np.minimum(tf + K * ev.fs, pd.ep_end[tf])
+            valid = nxt - tf == K * ev.fs
+            dk = ((ztr - ztr[np.vectorize(pos_of.get)(nxt)]) ** 2).mean(1)
+            tf_task = c.episode_task[c.episode_of_frame[tf]]
+            zf = final_latent()
+            d0 = ((z0 - zf) ** 2).mean(1)
+            thr = np.array([np.percentile(dk[valid & (tf_task == ti)], a.gate_pct) for ti in task])
+            cache_goal[key] = d0 <= thr
+            return cache_goal[key]
+
+        def final_latent():
+            if 'final' not in cache_goal:
+                cache_goal['final'] = ev.encode(ep_end)
+            return cache_goal['final']
+
         for gname in goals:
+            if gname.startswith(('nn', 'gated', 'hybrid')):
+                K = int(''.join(ch for ch in gname if ch.isdigit()))
+                cost_f = dist_cost(final_latent())
+                if gname.startswith('nn'):
+                    zg_nn = retrieval_goals(K)
+                    record(label, dist_cost(zg_nn).argmin(1), gname)
+                    if has_sf:
+                        record(f'{label} (value)', sf_values(zg_nn).argmax(1), gname)
+                    continue
+                open_ = gate_open(K)
+                R[f'{label}|{gname}|gate'] = open_
+                if gname.startswith('gated'):  # policy alone (candidate 0) while the goal is far
+                    alt_d = alt_v = np.zeros(n, np.int64)
+                else:                           # hybrid: retrieval subgoal while the goal is far
+                    zg_nn = retrieval_goals(K)
+                    alt_d = dist_cost(zg_nn).argmin(1)
+                    alt_v = sf_values(zg_nn).argmax(1) if has_sf else None
+                record(label, np.where(open_, cost_f.argmin(1), alt_d), gname)
+                if has_sf:
+                    record(f'{label} (value)', np.where(open_, sf_values(final_latent()).argmax(1), alt_v), gname)
+                print(f'  {label} {gname}: final goal used at {100 * open_.mean():.0f}% of states', flush=True)
+                continue
             gf = goal_frames(gname)
             if gf is None and gname.startswith('subgoal'):
                 gf = np.minimum(T + int(gname[len('subgoal'):]) * ev.fs, ep_end)
             elif gf is None:
                 gf = demo_frames(int(gname[len('demo'):]), ev.fs)
             zg = ev.encode(gf)
-            cost = ((zhat - zg[:, None]) ** 2).mean(-1)
-            record(label, cost.argmin(1), gname)
+            record(label, dist_cost(zg).argmin(1), gname)
             if has_sf:
-                vals = np.zeros((n, N), np.float32)
-                with torch.no_grad():
-                    for i in range(0, n, 128):
-                        zz = torch.from_numpy(zhat[i:i + 128]).to(ev.device)
-                        gg = torch.from_numpy(zg[i:i + 128]).to(ev.device)[:, None].expand_as(zz)
-                        vals[i:i + 128] = ev.model.goal_value(zz.reshape(-1, zz.shape[-1]),
-                                                              gg.reshape(-1, gg.shape[-1])).reshape(zz.shape[:2]).float().cpu().numpy()
-                record(f'{label} (value)', vals.argmax(1), gname)
+                record(f'{label} (value)', sf_values(zg).argmax(1), gname)
         del ev
         if dev.type == 'cuda':
             torch.cuda.empty_cache()
