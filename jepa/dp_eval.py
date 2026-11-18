@@ -146,14 +146,21 @@ def main():
     R.update({'cand|pos': pos.astype(np.float32), 'cand|rot': rot.astype(np.float32),
               'cand|grip': grip.astype(np.float32)})
 
+    ex = min(a.stride, H)  # steps executed per chunk before the next decision (for the drift analysis)
+    R.update({'gt': gt.astype(np.float32), 'cand_exec': cand[:, :, :ex].astype(np.float32)})
+
     def record(name, idx=None, goal='-'):
-        if idx is None:  # expected error of one sample
+        if idx is None:  # expected error of one sample; its drift uses candidate 0 (one random sample)
             vals = (pos.mean(1), rot.mean(1), grip.mean(1))
+            R[f'{name}|{goal}|idx'] = np.zeros(n, np.int64)
         elif isinstance(idx, str) and idx == 'min':  # lowest error among the N, metric by metric
             vals = (pos.min(1), rot.min(1), grip.min(1))
+            R[f'{name}|{goal}|idx'] = pos.argmin(1)
+            R[f'{name}|{goal}|idx_rot'] = rot.argmin(1)
         else:
             r = np.arange(n)
             vals = (pos[r, idx], rot[r, idx], grip[r, idx])
+            R[f'{name}|{goal}|idx'] = np.asarray(idx)
         for k, v in zip(('pos', 'rot', 'grip'), vals):
             R[f'{name}|{goal}|{k}'] = v
         methods.append((name, goal))
@@ -176,9 +183,24 @@ def main():
             return ep_end
         if name == 'oracle':
             return np.minimum(T + H, ep_end)
-        if name.startswith('subgoal'):
+        if name.startswith('subgoal') or name.startswith('demo'):
             return None  # needs the model's frame_skip
+        if name.startswith('subgoal') or name.startswith('demo'):
+            return None
         raise SystemExit(f'unknown goal {name!r}')
+
+    # reference demonstrations for the demoK goals: one training episode of the same task per
+    # held-out episode (fixed seed); the subgoal is the frame at the same episode progress, K latent
+    # steps further on, in that other demonstration
+    tr_by_task = {ti: [e for e in c.split_episodes('train') if c.episode_task[e] == ti] for ti in range(len(c.tasks))}
+    ref_rng = np.random.RandomState(a.seed + 1)
+    ref_of = {int(e): int(ref_rng.choice(tr_by_task[int(c.episode_task[e])])) for e in eps}
+    ref = np.array([ref_of[int(e)] for e in ep])
+
+    def demo_frames(K, fs):
+        rs, rl = c.starts[ref], c.lengths[ref]
+        k = np.round(progress * (rl - 1)).astype(np.int64) + K * fs
+        return rs + np.clip(k, 0, rl - 1)
 
     frame_skip = None
     for spec in a.model:
@@ -198,8 +220,10 @@ def main():
               + (' [successor value available]' if has_sf else ''), flush=True)
         for gname in goals:
             gf = goal_frames(gname)
-            if gf is None:
+            if gf is None and gname.startswith('subgoal'):
                 gf = np.minimum(T + int(gname[len('subgoal'):]) * ev.fs, ep_end)
+            elif gf is None:
+                gf = demo_frames(int(gname[len('demo'):]), ev.fs)
             zg = ev.encode(gf)
             cost = ((zhat - zg[:, None]) ** 2).mean(-1)
             record(label, cost.argmin(1), gname)
@@ -218,7 +242,7 @@ def main():
 
     meta = {'methods': methods, 'goals': goals, 'models': [s.split('=', 1)[0] for s in a.model],
             'n_states': int(n), 'n_episodes': len(eps), 'n_samples': N, 'horizon': H, 'stride': a.stride,
-            'splits': a.splits, 'frame_skip': frame_skip}
+            'splits': a.splits, 'frame_skip': frame_skip, 'executed_steps': int(ex), 'control_hz': 10.0}
     np.savez(os.path.join(a.out, 'results.npz'), **R)
     with open(os.path.join(a.out, 'meta.json'), 'w') as fh:
         json.dump(meta, fh, indent=1)
@@ -353,6 +377,9 @@ def report(R, meta, out):
     main_figures(R, meta, out)
     horizon_figure(R, meta, out)
     paired_stats(R, meta, out)
+    if 'gt' in R:
+        practical_table(R, meta, out)
+        drift_figures(R, meta, out)
     print(f'[done] {out}')
 
 
@@ -470,6 +497,115 @@ def paired_stats(R, meta, out, n_boot=2000, seed=0):
         f'p from {n_boot} bootstrap resamples of episodes.\n\n' + '\n'.join(md) + '\n')
     with open(os.path.join(out, 'stats.json'), 'w') as fh:
         json.dump(js, fh, indent=1)
+
+
+def practical_table(R, meta, out):
+    """practical.md: errors relative to how much the hand moves in one chunk, and errors at the
+    critical moments (pick-and-place chunks in which the gripper opens or closes; the last 20% of
+    rotate episodes)."""
+    gt = R['gt']
+    dpos, q = compose(gt)
+    motion_cm = 100 * np.linalg.norm(dpos, axis=-1)
+    motion_deg = np.degrees(2 * np.arccos(np.abs(q[..., 0]).clip(max=1.0)))
+    grip_mid = 0.5 * (gt[..., 6].min() + gt[..., 6].max())
+    switch = ((gt[..., 6] > grip_mid)[:, 1:] != (gt[..., 6] > grip_mid)[:, :-1]).any(1)
+    fam = R['family']
+    pp, ro = fam == 'pick_and_place', fam == 'rotate'
+    crit_pp = pp & switch
+    crit_ro = ro & (R['progress'] >= 0.8)
+    lines = [f'Hand motion per chunk ({meta["horizon"]} steps = {meta["horizon"] / meta["control_hz"]:g} s): '
+             f'pick-and-place {motion_cm[pp].mean():.2f} cm (median {np.median(motion_cm[pp]):.2f}), '
+             f'rotate {motion_deg[ro].mean():.2f} deg (median {np.median(motion_deg[ro]):.2f}).',
+             f'Critical states: {int(crit_pp.sum())} pick-and-place chunks with a gripper open/close, '
+             f'{int(crit_ro.sum())} rotate states in the last 20% of the episode.', '']
+    head = ['goal', 'method', 'p&p position, cm (% of motion)', 'rotate rotation, deg (% of motion)',
+            'grasp/release chunks: position cm', 'grasp/release chunks: gripper %', 'end of rotate: rotation deg']
+    rows = []
+    for goal in meta['goals']:
+        for name, g in METHODS:
+            if g not in ('-', goal):
+                continue
+            k = f'{name}|{g}|'
+            p_, r_, g_ = R[k + 'pos'], R[k + 'rot'], R[k + 'grip']
+            rows.append([goal, name,
+                         f'{p_[pp].mean():.2f} ({100 * p_[pp].mean() / max(motion_cm[pp].mean(), 1e-9):.0f}%)',
+                         f'{r_[ro].mean():.2f} ({100 * r_[ro].mean() / max(motion_deg[ro].mean(), 1e-9):.0f}%)',
+                         f'{p_[crit_pp].mean():.2f}' if crit_pp.any() else '-',
+                         f'{g_[crit_pp].mean():.1f}' if crit_pp.any() else '-',
+                         f'{r_[crit_ro].mean():.2f}' if crit_ro.any() else '-'])
+    md = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)] + ['| ' + ' | '.join(r) + ' |' for r in rows]
+    open(os.path.join(out, 'practical.md'), 'w').write('\n'.join(lines + md) + '\n')
+
+
+def _integrate(steps):
+    """(S, 7) per-step actions -> cumulative position (S+1, 3) and orientation quaternion (S+1, 4)."""
+    pos = np.concatenate([np.zeros((1, 3)), np.cumsum(steps[:, :3], 0)])
+    dq = rotvec_to_quat(steps[:, 3:6].astype(np.float64))
+    q = np.zeros((len(steps) + 1, 4))
+    q[0, 0] = 1.0
+    for k in range(len(steps)):
+        q[k + 1] = quat_mul(dq[k], q[k])
+    return pos, q
+
+
+def drift_figures(R, meta, out):
+    """fig_steer_drift_<goal>: execute the first `executed_steps` actions of each chosen chunk,
+    one after the other over the whole episode, WITHOUT feedback (each decision still sees the
+    recorded observation), and integrate them. The gap to the recorded hand pose shows how the
+    per-chunk errors accumulate: random errors partly cancel, systematic ones add up. On the robot,
+    feedback from the camera would correct part of this drift, so this is a pessimistic view."""
+    ex, hz = meta['executed_steps'], meta['control_hz']
+    gt_exec, cand = R['gt'][:, :ex], R['cand_exec']
+    ep = R['episode']
+    models = meta['models']
+    res = {}
+    for goal in meta['goals']:
+        panels = [('pick_and_place', 'pos', 'pick-and-place: accumulated position drift [cm]'),
+                  ('rotate', 'rot', 'rotate: accumulated rotation drift [deg]')]
+        panels = [p_ for p_ in panels if (R['family'] == p_[0]).any()]
+        fig, axes = plt.subplots(1, len(panels), figsize=(5.4 * len(panels), 3.8), squeeze=False)
+        handles = {}
+        for ax, (fam, k, ylab) in zip(axes[0], panels):
+            eps_f = np.unique(ep[R['family'] == fam])
+            for name, g in METHODS:
+                if g not in ('-', goal):
+                    continue
+                idx_key = f'{name}|{g}|idx_rot' if (k == 'rot' and f'{name}|{g}|idx_rot' in R) else f'{name}|{g}|idx'
+                idx = R[idx_key]
+                curves = []
+                for e in eps_f:
+                    st = np.flatnonzero(ep == e)                       # this episode's states, in time order
+                    chosen = cand[st, idx[st]].reshape(-1, 7)
+                    ref = gt_exec[st].reshape(-1, 7)
+                    pc, qc = _integrate(chosen)
+                    pg, qg = _integrate(ref)
+                    if k == 'pos':
+                        err = 100 * np.linalg.norm(pc - pg, axis=-1)
+                    else:
+                        err = np.degrees(2 * np.arccos(np.abs(quat_mul(qc, quat_conj(qg))[:, 0]).clip(max=1.0)))
+                    curves.append(err[::ex])                            # at each decision point
+                L = int(np.percentile([len(cv) for cv in curves], 50))   # times reached by >= half the episodes
+                M = np.full((len(curves), L), np.nan)
+                for i, cv in enumerate(curves):
+                    M[i, :min(L, len(cv))] = cv[:L]
+                mean = np.nanmean(M, 0)
+                se = np.nanstd(M, 0) / np.sqrt(np.maximum((~np.isnan(M)).sum(0), 1))
+                tsec = np.arange(L) * ex / hz
+                col, ls, lab = style(name, models)
+                h, = ax.plot(tsec, mean, color=col, ls=ls, lw=2.2 if name not in ('consensus', 'best') else 1.5)
+                ax.fill_between(tsec, mean - se, mean + se, color=col, alpha=0.12, linewidth=0)
+                handles[lab] = h
+                res.setdefault(goal, {}).setdefault(fam, {})[name] = {
+                    'time_s': tsec.tolist(), 'mean': mean.tolist(), 'final': float(mean[-1])}
+            ax.set_xlim(0, None)
+            ax.set_ylim(bottom=0)
+            ax.set_xlabel('time in episode [s] (open loop, no feedback)')
+            ax.set_ylabel(ylab, fontsize=8.5)
+        fig.tight_layout(rect=(0, 0.14, 1, 1))
+        fig.legend(list(handles.values()), list(handles.keys()), loc='lower center', ncol=3, fontsize=8.5)
+        _save(fig, out, f'fig_steer_drift_{goal}')
+    with open(os.path.join(out, 'drift.json'), 'w') as fh:
+        json.dump(res, fh, indent=1)
 
 
 if __name__ == '__main__':

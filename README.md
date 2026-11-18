@@ -245,3 +245,10 @@ rotation), fig_steer_horizon (error vs subgoal distance, when several subgoalK g
 fig_steer_summary and stats.md/json (paired differences between methods on the same states and
 candidates, 95% bootstrap intervals over episodes, p-values). "lower bound" is the best of the N
 candidates for each metric separately. `--replot` redraws everything from results.npz.
+
+More goals: `demoK` takes the subgoal K latent steps ahead from a *different* demonstration of the
+same task (a training episode, matched by episode progress), as on the robot. practical.md gives
+errors relative to the hand motion per chunk and at the critical moments (chunks where the gripper
+opens or closes; the end of rotate episodes). fig_steer_drift_<goal> executes the first --stride
+actions of every chosen chunk one after another over the whole episode without feedback and plots
+the accumulated gap to the recorded hand pose (a pessimistic view of compounding error).
