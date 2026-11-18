@@ -338,8 +338,13 @@ class WindowDataset(Dataset):
 
     def __init__(self, cache, split, horizon=3, frame_skip=2, action_mode='delta_next',
                  stats=None, return_goal=False, goal_geom_p=0.3, goal_max_offset=30,
-                 tasks=None, start_stride=1, seed=0, action_norm='scale', proprio=None):
+                 tasks=None, start_stride=1, seed=0, action_norm='scale', proprio=None,
+                 goal_uniform_frac=0.0, goal_final_frac=0.0):
         self.cache = cache
+        # goal offset mixture: with goal_final_frac the episode's last frame, with goal_uniform_frac a
+        # uniform offset up to the episode end, otherwise Geometric(goal_geom_p) capped at
+        # goal_max_offset (the default: only near goals)
+        self.goal_uniform_frac, self.goal_final_frac = float(goal_uniform_frac), float(goal_final_frac)
         self.H, self.fs = int(horizon), int(frame_skip)
         self.return_goal = bool(return_goal)
         self.goal_geom_p = float(goal_geom_p)
@@ -399,7 +404,13 @@ class WindowDataset(Dataset):
             out['proprio'] = torch.from_numpy(self.proprio[frames])
         if self.return_goal:
             k_avail = (ep_last - start) // self.fs
-            k = min(int(self.rng.geometric(self.goal_geom_p)), self.goal_max_offset, k_avail)
+            u = self.rng.rand() if (self.goal_final_frac or self.goal_uniform_frac) else 1.0
+            if k_avail >= 1 and u < self.goal_final_frac:
+                k = k_avail
+            elif k_avail >= 1 and u < self.goal_final_frac + self.goal_uniform_frac:
+                k = int(self.rng.randint(1, k_avail + 1))
+            else:
+                k = min(int(self.rng.geometric(self.goal_geom_p)), self.goal_max_offset, k_avail)
             g = start + k * self.fs
             out['goal_obs'] = self._frames(np.array([g]))[0]
             out['goal_prev_obs'] = self._frames(np.array([g - self.fs]))[0]

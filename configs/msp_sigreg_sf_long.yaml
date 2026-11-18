@@ -1,0 +1,13 @@
+# MSP+SIG+SF with long-horizon goals: the same model as msp_sigreg_sf (lambda_sf = 10, as the run
+# used in the paper figures) but trained so that its goal value is meaningful for far-away goals,
+# e.g. the final frame of an episode (the goal photo given at deployment).
+#   goals: 25% the episode's final frame, 25% uniform up to the episode end, 50% near
+#          (Geometric(0.3), as before, so short-range prediction is not lost)
+#   gamma 0.99: value horizon ~100 latent steps (20 s) instead of ~20 (4 s)
+inherit: msp_sigreg_sf.yaml
+data:
+  goal_final_frac: 0.25
+  goal_uniform_frac: 0.25
+training:
+  lambda_sf: 10.0
+  sf_gamma: 0.99

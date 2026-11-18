@@ -93,6 +93,10 @@ def main():
                    help='final | oracle | subgoalK (own future) | demoK (another demonstration) | nnK '
                         '(retrieved from the nearest training states) | gatedK (final goal when within K '
                         'latent steps, else policy alone) | hybridK (final when near, else nnK)')
+    p.add_argument('--gate-fallback', default='consensus', choices=['consensus', 'policy'],
+                   help='gatedK: what is executed while the final goal is out of reach')
+    p.add_argument('--pair', action='append', default=[],
+                   help='"RESULTS_DIR:GOAL:TITLE" (give two): only draw fig_drift_pair side by side into --out')
     p.add_argument('--nn-k', type=int, default=5, help='demonstrations retrieved for nnK / hybridK goals')
     p.add_argument('--gate-pct', type=float, default=75.0,
                    help='gatedK / hybridK: percentile of K-step latent distances that counts as "within reach"')
@@ -103,6 +107,9 @@ def main():
     p.add_argument('--replot', action='store_true', help='only redraw the figures from results.npz')
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    if a.pair:
+        drift_pair([spec.split(':', 2) for spec in a.pair], a.out)
+        return
     if a.replot:
         R = dict(np.load(os.path.join(a.out, 'results.npz'), allow_pickle=True))
         meta = json.load(open(os.path.join(a.out, 'meta.json')))
@@ -316,8 +323,8 @@ def main():
                     continue
                 open_ = gate_open(K)
                 R[f'{label}|{gname}|gate'] = open_
-                if gname.startswith('gated'):  # policy alone (candidate 0) while the goal is far
-                    alt_d = alt_v = np.zeros(n, np.int64)
+                if gname.startswith('gated'):  # far from the goal: consensus (or policy alone)
+                    alt_d = alt_v = cons if a.gate_fallback == 'consensus' else np.zeros(n, np.int64)
                 else:                           # hybrid: retrieval subgoal while the goal is far
                     zg_nn = retrieval_goals(K)
                     alt_d = dist_cost(zg_nn).argmin(1)
@@ -648,57 +655,64 @@ def _integrate(steps):
     return pos, q
 
 
+def drift_curve(R, meta, name, g, fam, k):
+    """Accumulated open-loop drift of one selection method: (time [s], mean, s.e. over episodes)."""
+    ex, hz = meta['executed_steps'], meta['control_hz']
+    gt_exec, cand, ep = R['gt'][:, :ex], R['cand_exec'], R['episode']
+    idx_key = f'{name}|{g}|idx_rot' if (k == 'rot' and f'{name}|{g}|idx_rot' in R) else f'{name}|{g}|idx'
+    idx = R[idx_key]
+    curves = []
+    for e in np.unique(ep[R['family'] == fam]):
+        st = np.flatnonzero(ep == e)                       # this episode's states, in time order
+        pc, qc = _integrate(cand[st, idx[st]].reshape(-1, 7))
+        pg, qg = _integrate(gt_exec[st].reshape(-1, 7))
+        if k == 'pos':
+            err = 100 * np.linalg.norm(pc - pg, axis=-1)
+        else:
+            err = np.degrees(2 * np.arccos(np.abs(quat_mul(qc, quat_conj(qg))[:, 0]).clip(max=1.0)))
+        curves.append(err[::ex])                            # at each decision point
+    L = int(np.percentile([len(cv) for cv in curves], 50))   # times reached by >= half the episodes
+    M = np.full((len(curves), L), np.nan)
+    for i, cv in enumerate(curves):
+        M[i, :min(L, len(cv))] = cv[:L]
+    mean = np.nanmean(M, 0)
+    se = np.nanstd(M, 0) / np.sqrt(np.maximum((~np.isnan(M)).sum(0), 1))
+    return np.arange(L) * ex / hz, mean, se
+
+
+DRIFT_PANELS = (('pick_and_place', 'pos', 'pick-and-place: accumulated position drift [cm]'),
+                ('rotate', 'rot', 'rotate: accumulated rotation drift [deg]'))
+
+
+def _drift_axes(ax, R, meta, goal, fam, k, handles):
+    for name, g in METHODS:
+        if g not in ('-', goal):
+            continue
+        tsec, mean, se = drift_curve(R, meta, name, g, fam, k)
+        col, ls, lab = style(name, meta['models'])
+        h, = ax.plot(tsec, mean, color=col, ls=ls, lw=2.2 if name not in ('consensus', 'best') else 1.5)
+        ax.fill_between(tsec, mean - se, mean + se, color=col, alpha=0.12, linewidth=0)
+        handles[lab] = h
+        yield name, tsec, mean
+    ax.set_xlim(0, None)
+    ax.set_ylim(bottom=0)
+
+
 def drift_figures(R, meta, out):
     """fig_steer_drift_<goal>: execute the first `executed_steps` actions of each chosen chunk,
     one after the other over the whole episode, WITHOUT feedback (each decision still sees the
     recorded observation), and integrate them. The gap to the recorded hand pose shows how the
     per-chunk errors accumulate: random errors partly cancel, systematic ones add up. On the robot,
     feedback from the camera would correct part of this drift, so this is a pessimistic view."""
-    ex, hz = meta['executed_steps'], meta['control_hz']
-    gt_exec, cand = R['gt'][:, :ex], R['cand_exec']
-    ep = R['episode']
-    models = meta['models']
     res = {}
     for goal in meta['goals']:
-        panels = [('pick_and_place', 'pos', 'pick-and-place: accumulated position drift [cm]'),
-                  ('rotate', 'rot', 'rotate: accumulated rotation drift [deg]')]
-        panels = [p_ for p_ in panels if (R['family'] == p_[0]).any()]
+        panels = [p_ for p_ in DRIFT_PANELS if (R['family'] == p_[0]).any()]
         fig, axes = plt.subplots(1, len(panels), figsize=(5.4 * len(panels), 3.8), squeeze=False)
         handles = {}
         for ax, (fam, k, ylab) in zip(axes[0], panels):
-            eps_f = np.unique(ep[R['family'] == fam])
-            for name, g in METHODS:
-                if g not in ('-', goal):
-                    continue
-                idx_key = f'{name}|{g}|idx_rot' if (k == 'rot' and f'{name}|{g}|idx_rot' in R) else f'{name}|{g}|idx'
-                idx = R[idx_key]
-                curves = []
-                for e in eps_f:
-                    st = np.flatnonzero(ep == e)                       # this episode's states, in time order
-                    chosen = cand[st, idx[st]].reshape(-1, 7)
-                    ref = gt_exec[st].reshape(-1, 7)
-                    pc, qc = _integrate(chosen)
-                    pg, qg = _integrate(ref)
-                    if k == 'pos':
-                        err = 100 * np.linalg.norm(pc - pg, axis=-1)
-                    else:
-                        err = np.degrees(2 * np.arccos(np.abs(quat_mul(qc, quat_conj(qg))[:, 0]).clip(max=1.0)))
-                    curves.append(err[::ex])                            # at each decision point
-                L = int(np.percentile([len(cv) for cv in curves], 50))   # times reached by >= half the episodes
-                M = np.full((len(curves), L), np.nan)
-                for i, cv in enumerate(curves):
-                    M[i, :min(L, len(cv))] = cv[:L]
-                mean = np.nanmean(M, 0)
-                se = np.nanstd(M, 0) / np.sqrt(np.maximum((~np.isnan(M)).sum(0), 1))
-                tsec = np.arange(L) * ex / hz
-                col, ls, lab = style(name, models)
-                h, = ax.plot(tsec, mean, color=col, ls=ls, lw=2.2 if name not in ('consensus', 'best') else 1.5)
-                ax.fill_between(tsec, mean - se, mean + se, color=col, alpha=0.12, linewidth=0)
-                handles[lab] = h
+            for name, tsec, mean in _drift_axes(ax, R, meta, goal, fam, k, handles):
                 res.setdefault(goal, {}).setdefault(fam, {})[name] = {
                     'time_s': tsec.tolist(), 'mean': mean.tolist(), 'final': float(mean[-1])}
-            ax.set_xlim(0, None)
-            ax.set_ylim(bottom=0)
             ax.set_xlabel('time in episode [s] (open loop, no feedback)')
             ax.set_ylabel(ylab, fontsize=8.5)
         fig.tight_layout(rect=(0, 0.14, 1, 1))
@@ -707,6 +721,37 @@ def drift_figures(R, meta, out):
     with open(os.path.join(out, 'drift.json'), 'w') as fh:
         json.dump(res, fh, indent=1)
 
+
+def drift_pair(specs, out):
+    """fig_drift_pair: the drift figure of two (results dir, goal) settings side by side; rows are
+    the task families, columns the settings, the y-range shared along each row."""
+    global METHODS
+    loaded = []
+    for d, goal, *title in specs:
+        R = dict(np.load(os.path.join(d, 'results.npz'), allow_pickle=True))
+        meta = json.load(open(os.path.join(d, 'meta.json')))
+        if goal not in meta['goals']:
+            raise SystemExit(f'{d}: goal {goal!r} not in {meta["goals"]}')
+        loaded.append((R, meta, goal, title[0] if title else f'{os.path.basename(os.path.normpath(d))}: {goal}'))
+    panels = [p_ for p_ in DRIFT_PANELS if all((R['family'] == p_[0]).any() for R, *_ in loaded)]
+    fig, axes = plt.subplots(len(panels), len(loaded), figsize=(5.6 * len(loaded), 3.6 * len(panels)),
+                             squeeze=False, sharey='row')
+    handles = {}
+    for c_, (R, meta, goal, title) in enumerate(loaded):
+        METHODS = [tuple(m) for m in meta['methods']]
+        for r, (fam, k, ylab) in enumerate(panels):
+            ax = axes[r, c_]
+            list(_drift_axes(ax, R, meta, goal, fam, k, handles))
+            if r == 0:
+                ax.set_title(title, fontsize=10)
+            if c_ == 0:
+                ax.set_ylabel(ylab, fontsize=8.5)
+            if r == len(panels) - 1:
+                ax.set_xlabel('time in episode [s] (open loop, no feedback)')
+    fig.tight_layout(rect=(0, 0.1, 1, 1))
+    fig.legend(list(handles.values()), list(handles.keys()), loc='lower center', ncol=3, fontsize=8.5)
+    _save(fig, out, 'fig_drift_pair')
+    print(f'[done] {os.path.join(out, "fig_drift_pair.png")}')
 
 if __name__ == '__main__':
     main()

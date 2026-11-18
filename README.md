@@ -259,4 +259,15 @@ nearest to the current one (one per demonstration) and uses what each demonstrat
 latent steps later as subgoals (cost averaged over them). `gatedK` steers towards the final frame
 only when it is within reach (latent distance below the --gate-pct percentile of K-step
 distances in training) and otherwise uses the policy alone; `hybridK` uses the final frame when
-near and the retrieved subgoals otherwise.
+near and the retrieved subgoals otherwise. While the gate is closed, gatedK executes the consensus
+candidate (`--gate-fallback policy` for a single policy sample).
+
+`configs/msp_sigreg_sf_long.yaml` trains SF for far-away goals (25% of hindsight goals are the
+episode's final frame, 25% uniform up to the end, gamma 0.99), so its goal value can steer towards
+a final goal photo. Data options: `goal_final_frac`, `goal_uniform_frac`.
+
+Side-by-side drift figure of two evaluations (e.g. subgoal provided vs final goal only):
+
+    python -m jepa.dp_eval --dp x --cache x --out eval/fig_pair \
+        --pair "eval/dp_steer4:subgoal10:subgoal 2 s ahead provided" \
+        --pair "eval/dp_final:gated10:final goal photo only"
