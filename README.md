@@ -239,5 +239,9 @@ a subgoal K latent steps ahead, and the frame at the end of the chunk (oracle, a
         --model "MSP+SIG=runs/msp_sigreg" --model "MSP+GCB+SIG=runs/msp_gcb_sigreg" \
         --model "MSP+SIG+SF=runs/msp_sigreg_sf_lam10"
 
-Writes summary.md/json, fig_steer_<goal> (error along the episode, per family) and
-fig_steer_summary; `--replot` redraws the figures from results.npz.
+Writes summary.md/json, fig_steer_<goal> (error along the episode, per family),
+fig_steer_main_<goal> (only the informative panels: pick-and-place position and gripper, rotate
+rotation), fig_steer_horizon (error vs subgoal distance, when several subgoalK goals are given),
+fig_steer_summary and stats.md/json (paired differences between methods on the same states and
+candidates, 95% bootstrap intervals over episodes, p-values). "lower bound" is the best of the N
+candidates for each metric separately. `--replot` redraws everything from results.npz.

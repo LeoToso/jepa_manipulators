@@ -143,9 +143,14 @@ def main():
     R = {'t': T, 'episode': ep, 'task': task, 'family': family, 'progress': progress}
     methods = []
 
+    R.update({'cand|pos': pos.astype(np.float32), 'cand|rot': rot.astype(np.float32),
+              'cand|grip': grip.astype(np.float32)})
+
     def record(name, idx=None, goal='-'):
         if idx is None:  # expected error of one sample
             vals = (pos.mean(1), rot.mean(1), grip.mean(1))
+        elif isinstance(idx, str) and idx == 'min':  # lowest error among the N, metric by metric
+            vals = (pos.min(1), rot.min(1), grip.min(1))
         else:
             r = np.arange(n)
             vals = (pos[r, idx], rot[r, idx], grip[r, idx])
@@ -160,7 +165,7 @@ def main():
         f = flat[i:i + 256]
         cons[i:i + 256] = ((f[:, :, None] - f[:, None]) ** 2).mean(-1).sum(-1).argmin(1)
     record('consensus', cons)
-    record('best', ((flat - pd.normalize(gt).reshape(n, 1, -1)) ** 2).mean(-1).argmin(1))
+    record('best', 'min')  # a true lower bound for every metric (not one shared candidate)
 
     # ---- 2. world-model selection -------------------------------------------------------------
     goals = a.goals.split(',')
@@ -175,6 +180,7 @@ def main():
             return None  # needs the model's frame_skip
         raise SystemExit(f'unknown goal {name!r}')
 
+    frame_skip = None
     for spec in a.model:
         label, run = spec.split('=', 1)
         ckpt = run if run.endswith('.pt') else os.path.join(run, 'model_final.pt')
@@ -187,6 +193,7 @@ def main():
         z0 = ev.encode(T)
         zhat = ev.rollout(np.repeat(z0, N, 0), wm_act)[:, -1].reshape(n, N, -1)  # predicted end latents
         has_sf = getattr(ev.model, 'successor', None) is not None
+        frame_skip = ev.fs
         print(f'{label}: rolled out {n * N} chunks ({H // ev.fs} latent steps)'
               + (' [successor value available]' if has_sf else ''), flush=True)
         for gname in goals:
@@ -211,7 +218,7 @@ def main():
 
     meta = {'methods': methods, 'goals': goals, 'models': [s.split('=', 1)[0] for s in a.model],
             'n_states': int(n), 'n_episodes': len(eps), 'n_samples': N, 'horizon': H, 'stride': a.stride,
-            'splits': a.splits}
+            'splits': a.splits, 'frame_skip': frame_skip}
     np.savez(os.path.join(a.out, 'results.npz'), **R)
     with open(os.path.join(a.out, 'meta.json'), 'w') as fh:
         json.dump(meta, fh, indent=1)
@@ -229,7 +236,7 @@ def style(name, models):
     if name == 'consensus':
         return INK2, '--', 'consensus of N (no world model)'
     if name == 'best':
-        return INK2, ':', 'best of N (closest to recorded)'
+        return INK2, ':', 'lower bound (best of N, per metric)'
     base = name.replace(' (value)', '')
     col = MODEL_COLORS[models.index(base) % len(MODEL_COLORS)] if base in models else INK2
     if name.endswith('(value)'):
@@ -343,7 +350,126 @@ def report(R, meta, out):
     for ext in ('png', 'pdf'):
         fig.savefig(os.path.join(out, f'fig_steer_summary.{ext}'), dpi=200, bbox_inches='tight')
     plt.close(fig)
+    main_figures(R, meta, out)
+    horizon_figure(R, meta, out)
+    paired_stats(R, meta, out)
     print(f'[done] {out}')
+
+
+KEY_PANELS = (('pick_and_place', 'pos', 'pick-and-place: position error [cm]'),
+              ('pick_and_place', 'grip', 'pick-and-place: gripper command error [% steps]'),
+              ('rotate', 'rot', 'rotate: rotation error [deg]'))
+
+
+def _key_panels(R):
+    fams = set(R['family'].tolist())
+    return [k for k in KEY_PANELS if k[0] in fams]
+
+
+def _save(fig, out, name):
+    for ext in ('png', 'pdf'):
+        fig.savefig(os.path.join(out, f'{name}.{ext}'), dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
+def main_figures(R, meta, out):
+    """fig_steer_main_<goal>: the three informative panels only (pick-and-place position and
+    gripper, rotate rotation) along the episode."""
+    models, bins = meta['models'], np.linspace(0, 1, 11)
+    mid = 0.5 * (bins[1:] + bins[:-1])
+    panels = _key_panels(R)
+    for goal in meta['goals']:
+        fig, axes = plt.subplots(1, len(panels), figsize=(4.6 * len(panels), 3.6), squeeze=False)
+        handles = {}
+        for ax, (fam, k, ylab) in zip(axes[0], panels):
+            m = R['family'] == fam
+            for name, g in METHODS:
+                if g not in ('-', goal):
+                    continue
+                col, ls, lab = style(name, models)
+                mean, se = per_episode_band(R[f'{name}|{g}|{k}'][m], R['progress'][m], R['episode'][m], bins)
+                h, = ax.plot(mid, mean, color=col, ls=ls, marker='o', ms=3,
+                             lw=2.2 if name not in ('consensus', 'best') else 1.5)
+                ax.fill_between(mid, mean - se, mean + se, color=col, alpha=0.12, linewidth=0)
+                handles[lab] = h
+            ax.set_xlim(0, 1)
+            ax.set_ylim(bottom=0)
+            ax.set_xlabel('episode progress')
+            ax.set_ylabel(ylab, fontsize=8.5)
+        fig.tight_layout(rect=(0, 0.12, 1, 1))
+        fig.legend(list(handles.values()), list(handles.keys()), loc='lower center', ncol=3, fontsize=8.5)
+        _save(fig, out, f'fig_steer_main_{goal}')
+
+
+def horizon_figure(R, meta, out):
+    """fig_steer_horizon: mean error vs how far ahead the subgoal is (subgoal goals only)."""
+    subs = sorted([g for g in meta['goals'] if g.startswith('subgoal')], key=lambda g: int(g[len('subgoal'):]))
+    if len(subs) < 2:
+        return
+    fs = meta.get('frame_skip') or 2
+    secs = np.array([int(g[len('subgoal'):]) * fs / 10.0 for g in subs])
+    models, panels = meta['models'], _key_panels(R)
+    fig, axes = plt.subplots(1, len(panels), figsize=(4.6 * len(panels), 3.6), squeeze=False)
+    handles = {}
+    for ax, (fam, k, ylab) in zip(axes[0], panels):
+        m = R['family'] == fam
+        for name, g in METHODS:
+            col, ls, lab = style(name, models)
+            if g == '-':
+                h = ax.axhline(R[f'{name}|-|{k}'][m].mean(), color=col, ls=ls, lw=1.4)
+                handles[lab] = h
+        for name in dict.fromkeys(nm for nm, g in METHODS if g in subs):
+            col, ls, lab = style(name, models)
+            vals = [R[f'{name}|{g}|{k}'][m].mean() if f'{name}|{g}|{k}' in R else np.nan for g in subs]
+            h, = ax.plot(secs, vals, color=col, ls=ls, marker='o', ms=4, lw=2.0)
+            handles[lab] = h
+        ax.set_xticks(secs, [f'{x:g}' for x in secs])
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel('subgoal distance ahead [s]')
+        ax.set_ylabel(ylab, fontsize=8.5)
+    fig.tight_layout(rect=(0, 0.12, 1, 1))
+    fig.legend(list(handles.values()), list(handles.keys()), loc='lower center', ncol=3, fontsize=8.5)
+    _save(fig, out, 'fig_steer_horizon')
+
+
+def paired_stats(R, meta, out, n_boot=2000, seed=0):
+    """Paired comparisons on the same states and candidates: mean difference A - B with a 95%
+    bootstrap interval over episodes (episodes resampled with replacement) and a two-sided p."""
+    rng = np.random.RandomState(seed)
+    panels = [(f, k, lab.split(':')[0] + ' ' + {'pos': 'cm', 'rot': 'deg', 'grip': '% grip'}[k])
+              for f, k, lab in _key_panels(R)]
+    rows, js = [], {}
+    for goal in meta['goals']:
+        wm = [nm for nm, g in METHODS if g == goal][::-1]  # successor models first: A = SF
+        pairs = [(a_, b_) for i, a_ in enumerate(wm) for b_ in wm[i + 1:]]
+        pairs += [(a_, ref) for a_ in wm for ref in ('consensus', 'policy')]
+        for fam, k, plab in panels:
+            m = R['family'] == fam
+            eps = R['episode'][m]
+            ue, inv = np.unique(eps, return_inverse=True)
+            cnt = np.bincount(inv)
+            for a_, b_ in pairs:
+                ka = f'{a_}|{goal}|{k}'
+                kb = f'{b_}|{"-" if b_ in ("consensus", "policy", "best") else goal}|{k}'
+                d = R[ka][m] - R[kb][m]
+                sums = np.bincount(inv, weights=d)
+                draw = rng.randint(0, len(ue), (n_boot, len(ue)))
+                boot = sums[draw].sum(1) / cnt[draw].sum(1)
+                diff = d.mean()
+                lo, hi = np.percentile(boot, [2.5, 97.5])
+                pval = min(1.0, 2 * min((boot <= 0).mean(), (boot >= 0).mean()))
+                rows.append([goal, f'{a_} vs {b_}', plab, f'{R[ka][m].mean():.2f}', f'{R[kb][m].mean():.2f}',
+                             f'{diff:+.2f} [{lo:+.2f}, {hi:+.2f}]', f'{pval:.3f}' if pval >= 0.001 else '<0.001'])
+                js.setdefault(goal, []).append({'a': a_, 'b': b_, 'panel': plab, 'mean_a': float(R[ka][m].mean()),
+                                                'mean_b': float(R[kb][m].mean()), 'diff': float(diff),
+                                                'ci95': [float(lo), float(hi)], 'p': float(pval)})
+    head = ['goal', 'comparison (A vs B)', 'metric', 'A', 'B', 'A - B [95% CI]', 'p']
+    md = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)] + ['| ' + ' | '.join(r) + ' |' for r in rows]
+    open(os.path.join(out, 'stats.md'), 'w').write(
+        'Paired differences on the same states and candidates (negative = A has lower error). 95% CI and '
+        f'p from {n_boot} bootstrap resamples of episodes.\n\n' + '\n'.join(md) + '\n')
+    with open(os.path.join(out, 'stats.json'), 'w') as fh:
+        json.dump(js, fh, indent=1)
 
 
 if __name__ == '__main__':
