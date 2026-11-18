@@ -118,10 +118,27 @@ class Planner:
         return int(((zend - zg) ** 2).mean(-1).argmin())
 
 
-def run_episode(env, planner, method, task_id, seed, a, record=False):
+class HiResCamera:
+    """Renders the scene at a higher resolution for videos only (the agent still sees 64 x 64)."""
+
+    def __init__(self, env, size, camera):
+        import mujoco
+        u = env.unwrapped
+        u._model.vis.global_.offwidth = max(u._model.vis.global_.offwidth, size)
+        u._model.vis.global_.offheight = max(u._model.vis.global_.offheight, size)
+        self.r, self.u, self.camera = mujoco.Renderer(u._model, size, size), u, camera
+
+    def __call__(self):
+        self.r.update_scene(self.u._data, camera=self.camera)
+        return self.r.render().copy()
+
+
+def run_episode(env, planner, method, task_id, seed, a, record=False, cam=None):
     ob, info = env.reset(seed=seed, options=dict(task_id=task_id, render_goal=False))
     goal = info['goal']
-    frames, props, video = [ob], [proprio_from_info(info)], [ob] if record else None
+    frames, props = [ob], [proprio_from_info(info)]
+    snap = (lambda o: cam()) if cam is not None else (lambda o: o)
+    video = [snap(ob)] if record else None
     gen = torch.Generator(device=planner.dev).manual_seed(seed)
     max_steps = a.max_steps or env.spec.max_episode_steps
     t, success = 0, False
@@ -133,7 +150,7 @@ def run_episode(env, planner, method, task_id, seed, a, record=False):
             frames.append(ob)
             props.append(proprio_from_info(info))
             if record:
-                video.append(ob)
+                video.append(snap(ob))
             t += 1
             if info.get('success', False):
                 success = True
@@ -143,8 +160,12 @@ def run_episode(env, planner, method, task_id, seed, a, record=False):
 
 
 def save_gif(frames, goal, path):
+    """Episode next to its goal image (the goal is the 64 x 64 image the agent receives)."""
     from PIL import Image
-    imgs = [Image.fromarray(np.concatenate([f, goal], axis=1)).resize((256, 128), Image.NEAREST) for f in frames[::2]]
+    h = frames[0].shape[0]
+    g = np.asarray(Image.fromarray(goal).resize((h, h), Image.NEAREST))
+    size = (2 * max(h, 128), max(h, 128))
+    imgs = [Image.fromarray(np.concatenate([f, g], axis=1)).resize(size, Image.NEAREST) for f in frames[::2]]
     imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=80, loop=0)
 
 
@@ -162,6 +183,8 @@ def main():
     p.add_argument('--max-steps', type=int, default=0, help='0 = the environment limit')
     p.add_argument('--methods', default='', help='comma-separated subset (default: all)')
     p.add_argument('--videos', action='store_true', help='one GIF per method and task (first episode)')
+    p.add_argument('--video-size', type=int, default=256, help='video resolution (render only; 64 = what the agent sees)')
+    p.add_argument('--video-camera', default='front', help="'front' (opaque arm) or 'front_pixels' (the agent's view)")
     p.add_argument('--device', default='cuda')
     p.add_argument('--seed', type=int, default=0)
     a = p.parse_args()
@@ -169,6 +192,7 @@ def main():
     dev = torch.device(a.device if (a.device != 'cuda' or torch.cuda.is_available()) else 'cpu')
     planner = Planner(a, dev)
     env = _env(a.env)
+    cam = None
     methods = [m for m in planner.methods() if not a.methods or m in a.methods.split(',')]
     tasks = [int(x) for x in a.tasks.split(',')]
     res_path = os.path.join(a.out, 'results.json')
@@ -182,7 +206,11 @@ def main():
             t0 = time.time()
             for e in range(a.episodes_per_task):
                 seed = a.seed + 1000 * task + e  # the same start states for every method
-                ok, n, video, goal = run_episode(env, planner, method, task, seed, a, record=a.videos and e == 0)
+                rec = a.videos and e == 0
+                if rec and cam is None and a.video_size != 64:
+                    env.reset(seed=seed)
+                    cam = HiResCamera(env, a.video_size, a.video_camera)
+                ok, n, video, goal = run_episode(env, planner, method, task, seed, a, record=rec, cam=cam if rec else None)
                 succ.append(bool(ok))
                 steps.append(int(n))
                 if video is not None:
