@@ -24,10 +24,33 @@ from jepa.ogb_data import _env
 from jepa.ogb_eval import HiResCamera, Planner, run_episode
 
 
+def _font(size):
+    from PIL import ImageFont
+    try:
+        return ImageFont.load_default(size=size)  # Pillow >= 10.1: scalable default font
+    except TypeError:
+        try:
+            return ImageFont.truetype('DejaVuSans.ttf', size)
+        except OSError:
+            return ImageFont.load_default()
+
+
+def _centered(d, x0, width, y, text, font, fill):
+    w = d.textbbox((0, 0), text, font=font)[2]
+    d.text((x0 + (width - w) / 2, y), text, font=font, fill=fill)
+
+
+PRETTY = {'policy': 'Policy alone', 'consensus': 'Consensus of N'}
+
+
 def compose(videos, labels, oks, goal, size, path):
+    """Panels side by side, each with its title centred above it: the method on the first line,
+    the time step / SUCCESS / FAIL on the second; the goal image last."""
     T = max(len(v) for v in videos)
     g = Image.fromarray(goal).resize((size, size), Image.NEAREST)
-    bar = 22
+    fs = max(12, size // 16)
+    f_title, f_status = _font(fs), _font(int(fs * 0.9))
+    bar = int(2.6 * fs) + 6
     frames = []
     for t in range(0, T, 2):
         canvas = Image.new('RGB', (size * (len(videos) + 1), size + bar), (255, 255, 255))
@@ -35,11 +58,13 @@ def compose(videos, labels, oks, goal, size, path):
         for j, (v, lab, ok) in enumerate(zip(videos, labels, oks)):
             done = t >= len(v) - 1
             canvas.paste(Image.fromarray(v[min(t, len(v) - 1)]), (j * size, bar))
-            status = ('SUCCESS' if ok else 'FAIL') if done else f't={t}'
-            col = (27, 175, 122) if (done and ok) else ((184, 48, 47) if done else (11, 11, 11))
-            d.text((j * size + 4, 4), f'{lab}: {status}', fill=col)
+            status = ('SUCCESS' if ok else 'FAIL') if done else f'step {t}'
+            col = (27, 175, 122) if (done and ok) else ((184, 48, 47) if done else (82, 81, 78))
+            _centered(d, j * size, size, 3, PRETTY.get(lab, lab), f_title, (11, 11, 11))
+            _centered(d, j * size, size, 3 + int(1.3 * fs), status, f_status, col)
         canvas.paste(g, (len(videos) * size, bar))
-        d.text((len(videos) * size + 4, 4), 'goal (agent view)', fill=(11, 11, 11))
+        _centered(d, len(videos) * size, size, 3, 'Goal image', f_title, (11, 11, 11))
+        _centered(d, len(videos) * size, size, 3 + int(1.3 * fs), '(what the agent sees)', f_status, (82, 81, 78))
         frames.append(canvas)
     frames += [frames[-1]] * 10  # hold the end
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=70, loop=0)
