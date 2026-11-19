@@ -108,7 +108,10 @@ class Planner:
             ps = m['proprio']
             prop = torch.from_numpy(((props[t] - np.array(ps['mean'])) / np.array(ps['std'])).astype(np.float32))[None].to(self.dev)
         z0 = model.encode(img(frames[t]), img(frames[max(t - fs, 0)]), prop)
-        zg = model.encode(img(goal), img(goal), prop)  # a goal image has no motion: prev = goal
+        # a goal image has no motion (prev = goal) and no robot state: a proprio-dropout model encodes
+        # it without proprio (as in its training); an older proprio model falls back to the current one
+        gprop = None if getattr(model.encoder, 'proprio_optional', False) else prop
+        zg = model.encode(img(goal), img(goal), gprop)
         st = m['stats']
         act = (cand - np.array(st['mean'], np.float32)) / np.array(st['std'], np.float32)
         act = torch.from_numpy(act.reshape(len(cand), self.H // fs, -1).astype(np.float32)).to(self.dev)

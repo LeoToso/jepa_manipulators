@@ -37,7 +37,7 @@ class PatchViTEncoder(nn.Module):
     concatenated to the CLS feature before the projector."""
 
     def __init__(self, image_size=128, patch_size=8, in_channels=3, proprio_dim=0,
-                 embed_dim=192, depth=4, heads=3, mlp_ratio=4.0, latent_dim=192):
+                 embed_dim=192, depth=4, heads=3, mlp_ratio=4.0, latent_dim=192, proprio_dropout=0.0):
         super().__init__()
         if image_size % patch_size:
             raise ValueError('image_size must be divisible by patch_size')
@@ -60,6 +60,13 @@ class PatchViTEncoder(nn.Module):
             nn.Linear(2048, latent_dim))
         nn.init.trunc_normal_(self.cls, std=.02)
         nn.init.trunc_normal_(self.pos, std=.02)
+        # Optional proprio: with proprio_dropout > 0 a learned "missing" vector replaces the proprio
+        # of a random fraction of samples in training, and of every sample whose proprio is absent
+        # (None, or rows of NaN), e.g. a goal image, which carries no robot state.
+        self.proprio_dropout = float(proprio_dropout)
+        self.proprio_optional = self.proprio_dim > 0 and self.proprio_dropout > 0
+        if self.proprio_optional:
+            self.proprio_missing = nn.Parameter(torch.zeros(self.proprio_dim))
 
     def forward(self, pixels, proprio=None, return_tokens=False):
         x = self.patch(pixels).flatten(2).transpose(1, 2)
@@ -67,6 +74,16 @@ class PatchViTEncoder(nn.Module):
         x = torch.cat((cls, x), dim=1) + self.pos
         x = self.norm(self.blocks(x))
         feature = x[:, 0]
+        if self.proprio_dim and self.proprio_optional:
+            b = feature.shape[0]
+            if proprio is None:
+                proprio = torch.full((b, self.proprio_dim), float('nan'), device=feature.device)
+            proprio = proprio.float()
+            missing = torch.isnan(proprio).any(-1)
+            if self.training:
+                missing = missing | (torch.rand(b, device=feature.device) < self.proprio_dropout)
+            proprio = torch.where(missing[:, None], self.proprio_missing.expand(b, -1),
+                                  torch.nan_to_num(proprio))
         if self.proprio_dim:
             if proprio is None:
                 raise ValueError('proprio is required by this encoder')
@@ -222,7 +239,8 @@ class WorldModel(nn.Module):
             image_size=int(cfg.get('image_size', 128)), patch_size=int(cfg.get('patch_size', 8)),
             in_channels=9 if self.use_frame_diff else 3, proprio_dim=self.proprio_dim,
             embed_dim=int(cfg.get('vit_embed_dim', 192)),
-            depth=int(cfg.get('vit_depth', 4)), heads=int(cfg.get('vit_heads', 3)), latent_dim=d)
+            depth=int(cfg.get('vit_depth', 4)), heads=int(cfg.get('vit_heads', 3)), latent_dim=d,
+            proprio_dropout=float(cfg.get('proprio_dropout', 0.0)) if self.use_proprio else 0.0)
         self.encoder = PatchViTEncoder(**enc_kwargs)
         self.action_encoder = ActionEmbedder(self.action_dim, d)
         self.predictor = ARPredictor(
@@ -254,6 +272,8 @@ class WorldModel(nn.Module):
 
     def encode(self, obs, prev_obs=None, proprio=None, return_tokens=False):
         """obs, prev_obs: (B, 3, S, S) uint8 or float in [0, 1]; proprio: (B, P) normalized."""
+        if self.use_proprio and proprio is None and not self.encoder.proprio_optional:
+            raise ValueError('this world model needs proprio (train it with proprio_dropout > 0 to allow none)')
         return self.encoder(self.encoder_input(obs, prev_obs), proprio if self.use_proprio else None,
                             return_tokens=return_tokens)
 

@@ -1,0 +1,10 @@
+# OGBench visual cube, msp_gcb_sigreg with proprio fused into the encoder (as on the Franka).
+# Goal images carry no robot state, so proprio is optional: a learned "missing" vector replaces it
+# for 30% of training samples and for every goal (in training and at test time).
+inherit: msp_gcb_sigreg.yaml
+model:
+  use_proprio: true
+  proprio_keys: [q, dq, gripper]   # 6 arm joints + 6 joint velocities + gripper opening = 13-d
+  proprio_dropout: 0.3
+training:
+  goal_without_proprio: true

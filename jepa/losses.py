@@ -198,9 +198,12 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False, sf_target=N
         flat_obs = torch.cat([obs.reshape(b * t, *obs.shape[2:]), batch['goal_obs'].to(device, non_blocking=True)])
         flat_prev = torch.cat([prev.reshape(b * t, *prev.shape[2:]),
                                batch['goal_prev_obs'].to(device, non_blocking=True)])
-        flat_prop = None
+        flat_prop, goal_prop = None, None
         if proprio is not None:
-            flat_prop = torch.cat([proprio.reshape(b * t, -1), batch['goal_proprio'].to(device, non_blocking=True)])
+            goal_prop = batch['goal_proprio'].to(device, non_blocking=True)
+            if model.encoder.proprio_optional and tc.get('goal_without_proprio', True):
+                goal_prop = torch.full_like(goal_prop, float('nan'))  # goals are images only, as at test time
+            flat_prop = torch.cat([proprio.reshape(b * t, -1), goal_prop])
         zall = model.encode(flat_obs, flat_prev, flat_prop)
         z, z_goal = zall[:b * t].reshape(b, t, -1), zall[b * t:]
     else:
@@ -243,8 +246,7 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False, sf_target=N
             model, model.encoder_input(obs[:, 0], prev[:, 0]), model.encoder_input(obs[:, 1], prev[:, 1]),
             x_goal, z[:, 0], z_goal, r, kind == 'indicator', float(tc.get('gcb_gamma', 0.99)),
             str(tc.get('gcb_distance', 'normalized')),
-            None if proprio is None else torch.cat([proprio[:, 0], proprio[:, 1],
-                                                    batch['goal_proprio'].to(device, non_blocking=True)]))
+            None if proprio is None else torch.cat([proprio[:, 0], proprio[:, 1], goal_prop]))
         total = (total + float(tc.get('lambda_gcb_phi', 1.0)) * l_phi
                  + float(tc.get('lambda_gcb_psi', 1.0)) * l_psi
                  + float(tc.get('lambda_gcb_reward', 1.0)) * l_rew)
