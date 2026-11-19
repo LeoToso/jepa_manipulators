@@ -29,6 +29,11 @@ import zipfile
 
 import numpy as np
 
+# Headless rendering on a GPU server: MuJoCo must use EGL (not GLFW, which needs a display). Set it
+# before MuJoCo is imported anywhere; an explicit MUJOCO_GL in the environment still wins.
+os.environ.setdefault('MUJOCO_GL', 'egl')
+os.environ.setdefault('PYOPENGL_PLATFORM', os.environ['MUJOCO_GL'])
+
 
 def _env(env_name, **kw):
     import gymnasium
