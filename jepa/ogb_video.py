@@ -88,6 +88,9 @@ def main():
     p.add_argument('--max-steps', type=int, default=0)
     p.add_argument('--seed', type=int, default=0, help='the evaluation seed (jepa.ogb_eval --seed)')
     p.add_argument('--device', default='cuda')
+    p.add_argument('--strip', default='', help='instead of GIFs: one figure, a row of frames per task, '
+                   'for this single method (e.g. "MSP+SIG+SF (value)")')
+    p.add_argument('--n-frames', type=int, default=8, help='frames per row in --strip mode')
     a = p.parse_args()
     dev = torch.device(a.device if (a.device != 'cuda' or torch.cuda.is_available()) else 'cpu')
     methods = [m.strip() for m in a.methods.split(',')]
@@ -100,6 +103,9 @@ def main():
     out = os.path.join(a.eval_dir, 'videos')
     os.makedirs(out, exist_ok=True)
     prefer = a.prefer or methods[0]
+    if a.strip:
+        strip_figure(a, env, planner, cam, res, out)
+        return
     for task in [int(x) for x in a.tasks.split(',')]:
         e = a.episode
         if e < 0:
@@ -115,6 +121,53 @@ def main():
         path = os.path.join(out, f'compare_task{task}_ep{e}.gif')
         compose(videos, methods, oks, goal, a.size, path)
         print(f'  wrote {path}')
+
+
+TASK_NAMES = {1: 'horizontal', 2: 'vertical 1', 3: 'vertical 2', 4: 'diagonal 1', 5: 'diagonal 2'}
+
+
+def strip_figure(a, env, planner, cam, res, out):
+    """fig_task_strips: one row per task, --n-frames frames evenly spaced over one episode of the
+    --strip method (an episode where it succeeded, from results.json), then the goal image."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    m = a.strip
+    tasks = [int(x) for x in a.tasks.split(',')]
+    n = a.n_frames
+    fig, axes = plt.subplots(len(tasks), n + 1, figsize=(1.6 * (n + 1), 1.75 * len(tasks)), squeeze=False,
+                             gridspec_kw={'wspace': 0.04, 'hspace': 0.28})
+    for r, task in enumerate(tasks):
+        e = a.episode
+        if e < 0:
+            succ = res.get(f'{m}|task{task}', {}).get('success', [])
+            e = int(np.argmax(succ)) if any(succ) else 0
+        ok, steps, video, goal = run_episode(env, planner, m, task, a.seed + 1000 * task + e, a, record=True, cam=cam)
+        print(f'task {task} episode {e}: {m} {"success" if ok else "fail"} in {steps} steps', flush=True)
+        idx = np.linspace(0, len(video) - 1, n).round().astype(int)
+        for c_, i in enumerate(idx):
+            ax = axes[r, c_]
+            ax.imshow(video[i])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title(f'step {i}' + (' (success)' if ok and i == idx[-1] else ''), fontsize=8,
+                         color='#1baf7a' if ok and i == idx[-1] else '#0b0b0b')
+            if c_ == 0:
+                ax.set_ylabel(f'task {task}\n{TASK_NAMES.get(task, "")}', fontsize=9)
+        ax = axes[r, n]
+        ax.imshow(goal)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_color('#eb6834')
+            sp.set_linewidth(2)
+        ax.set_title('goal image', fontsize=8)
+    fig.subplots_adjust(top=0.9)
+    fig.suptitle(f'OGBench visual-cube-single: one episode per task ({PRETTY.get(m, m)})', fontsize=10, y=0.96)
+    for ext in ('png', 'pdf'):
+        fig.savefig(os.path.join(out, f'fig_task_strips.{ext}'), dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  wrote {os.path.join(out, "fig_task_strips.png")}')
 
 
 if __name__ == '__main__':
