@@ -229,11 +229,31 @@ def report(res, methods, tasks, models, out, env_name):
         per = [np.mean(res[f'{m}|task{t}']['success']) for t in tasks]
         allv = np.concatenate([res[f'{m}|task{t}']['success'] for t in tasks]).astype(float)
         se = allv.std(ddof=1) / np.sqrt(len(allv)) if len(allv) > 1 else 0.0
-        summ[m] = {'per_task': per, 'overall': float(allv.mean()), 'se': float(se), 'n': int(len(allv))}
-        rows.append(f'| {m} | ' + ' | '.join(f'{100 * v:.0f}' for v in per) + f' | **{100 * allv.mean():.1f}** ± {100 * se:.1f} |')
-    head = '| method | ' + ' | '.join(f'task {t}' for t in tasks) + ' | overall (%) |'
+        steps = np.concatenate([res[f'{m}|task{t}']['steps'] for t in tasks]).astype(float)
+        st_ok = float(steps[allv > 0].mean()) if (allv > 0).any() else float('nan')
+        summ[m] = {'per_task': per, 'overall': float(allv.mean()), 'se': float(se), 'n': int(len(allv)),
+                   'steps_to_success': st_ok, 'steps_all': float(steps.mean())}
+        rows.append(f'| {m} | ' + ' | '.join(f'{100 * v:.0f}' for v in per) + f' | **{100 * allv.mean():.1f}** ± {100 * se:.1f} '
+                    f'| {st_ok:.0f} |')
+    head = '| method | ' + ' | '.join(f'task {t}' for t in tasks) + ' | overall (%) | steps to success |'
     md = [f'{env_name}: success rate (%), {summ[methods[0]]["n"] // len(tasks)} episodes per task', '',
-          head, '|' + '---|' * (len(tasks) + 2)] + rows
+          head, '|' + '---|' * (len(tasks) + 3)] + rows
+    # paired comparisons (same start states and goals): difference in success rate, 95% bootstrap CI
+    rng = np.random.RandomState(0)
+    vec = {m: np.concatenate([res[f'{m}|task{t}']['success'] for t in tasks]).astype(float) for m in methods}
+    md += ['', 'Paired differences in success rate (same episodes), 95% bootstrap interval:', '',
+           '| A vs B | A - B (points) | 95% CI | p |', '|---|---|---|---|']
+    wm = [m for m in methods if m not in ('policy', 'consensus')]
+    pairs = [('consensus', 'policy')] + [(m, b) for m in wm for b in ('policy', 'consensus')]
+    pairs += [(wm[j], wm[i]) for i in range(len(wm)) for j in range(i + 1, len(wm))]
+    for a_, b_ in pairs:
+        if True:
+            d = vec[a_] - vec[b_]
+            boot = d[rng.randint(0, len(d), (5000, len(d)))].mean(1)
+            lo, hi = np.percentile(boot, [2.5, 97.5])
+            pv = min(1.0, 2 * min((boot <= 0).mean(), (boot >= 0).mean()))
+            md.append(f'| {a_} vs {b_} | {100 * d.mean():+.1f} | [{100 * lo:+.1f}, {100 * hi:+.1f}] | '
+                      + (f'{pv:.3f}' if pv >= 0.001 else '<0.001') + ' |')
     open(os.path.join(out, 'summary.md'), 'w').write('\n'.join(md) + '\n')
     with open(os.path.join(out, 'summary.json'), 'w') as fh:
         json.dump(summ, fh, indent=1)
