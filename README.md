@@ -288,3 +288,9 @@ goals are images; GCB's state reward includes the cube). Policy: `jepa.dp_train 
 --action-mode stored` (goal-conditioned, hindsight goal images). Evaluation: `jepa.ogb_eval` runs
 OGBench's 5 tasks closed-loop with the policy alone, consensus, and each world model choosing among
 the policy's candidates, and reports success rates (summary.md, fig_success.png, optional GIFs).
+
+`jepa.ogb_analysis` runs the Franka latent-space analyses on the OGBench world models: error of a
+linear readout of effector / cube position and gripper opening from the k leading principal
+directions (fig_ogb_pc_error), an MLP state decoder on frozen latents (fig_ogb_decoded), and the
+decoded error of open-loop predictions with the recorded actions (fig_ogb_prediction).
+`jepa.ogb_video` makes side-by-side GIFs of several methods on the same evaluation episode.
