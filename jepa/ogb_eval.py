@@ -209,7 +209,7 @@ def main():
     planner = Planner(a, dev)
     env = _env(a.env)
     from jepa.ogb_ood import apply_ood
-    print(f'visual condition: {apply_ood(env, a.ood)}', flush=True)
+    print(f'visual condition: {apply_ood(env, a.ood)}; disturbance during execution: {a.disturb}', flush=True)
     cam = None
     methods = [m for m in planner.methods() if not a.methods or m in a.methods.split(',')]
     tasks = [int(x) for x in a.tasks.split(',')]
