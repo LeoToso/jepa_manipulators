@@ -136,7 +136,9 @@ class HiResCamera:
         return self.r.render().copy()
 
 
-def run_episode(env, planner, method, task_id, seed, a, record=False, cam=None):
+def run_episode(env, planner, method, task_id, seed, a, record=False, cam=None, return_events=False):
+    from jepa.ogb_disturb import Disturbance
+    dist = Disturbance(getattr(a, 'disturb', 'none'), seed)
     ob, info = env.reset(seed=seed, options=dict(task_id=task_id, render_goal=False))
     goal = info['goal']
     frames, props = [ob], [proprio_from_info(info)]
@@ -149,7 +151,10 @@ def run_episode(env, planner, method, task_id, seed, a, record=False, cam=None):
         cand_n, cand = planner.candidates(frames, props, goal, gen)
         k = planner.select(method, cand_n, cand, frames, props, goal)
         for action in cand[k][:a.exec_steps]:
-            ob, _, terminated, truncated, info = env.step(np.clip(action, -1, 1))
+            ob, _, terminated, truncated, info = env.step(dist.action(action, t))
+            if dist.after_step(env, t):  # the state was changed (cube knocked away): observe it
+                ob = env.unwrapped.compute_observation()
+                info = env.unwrapped.compute_ob_info()
             frames.append(ob)
             props.append(proprio_from_info(info))
             if record:
@@ -159,6 +164,10 @@ def run_episode(env, planner, method, task_id, seed, a, record=False, cam=None):
                 success = True
             if terminated or truncated or success or t >= max_steps:
                 break
+            if dist.events and dist.events[-1] == t - 1 and dist.name == 'push':
+                break  # re-plan right after a push
+    if return_events:
+        return success, t, video, goal, dist.events
     return success, t, video, goal
 
 
@@ -190,6 +199,8 @@ def main():
     p.add_argument('--video-camera', default='front', help="'front' (opaque arm) or 'front_pixels' (the agent's view)")
     p.add_argument('--device', default='cuda')
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--disturb', default='none', help='disturbance during execution (jepa.ogb_disturb): '
+                   'none, push[:d], noise[:s], burst[:p]')
     p.add_argument('--ood', default='none', help='visual perturbation (jepa.ogb_ood): none, floor, floor_green, '
                    'light_dim, light_warm, cube, camera, all')
     a = p.parse_args()
@@ -227,7 +238,8 @@ def main():
                 json.dump(res, fh, indent=1)
             print(f'{method:28s} task {task}: success {np.mean(succ):.2f} ({sum(succ)}/{len(succ)})  '
                   f'{time.time() - t0:.0f}s', flush=True)
-    report(res, methods, tasks, list(planner.models), a.out, a.env + ('' if a.ood == 'none' else f' [{a.ood}]'))
+    report(res, methods, tasks, list(planner.models), a.out, a.env + ('' if a.ood == 'none' else f' [{a.ood}]')
+           + ('' if a.disturb == 'none' else f' [disturb {a.disturb}]'))
 
 
 def report(res, methods, tasks, models, out, env_name):
