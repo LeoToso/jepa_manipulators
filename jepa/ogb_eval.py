@@ -190,11 +190,15 @@ def main():
     p.add_argument('--video-camera', default='front', help="'front' (opaque arm) or 'front_pixels' (the agent's view)")
     p.add_argument('--device', default='cuda')
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--ood', default='none', help='visual perturbation (jepa.ogb_ood): none, floor, floor_green, '
+                   'light_dim, light_warm, cube, camera, all')
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
     dev = torch.device(a.device if (a.device != 'cuda' or torch.cuda.is_available()) else 'cpu')
     planner = Planner(a, dev)
     env = _env(a.env)
+    from jepa.ogb_ood import apply_ood
+    print(f'visual condition: {apply_ood(env, a.ood)}', flush=True)
     cam = None
     methods = [m for m in planner.methods() if not a.methods or m in a.methods.split(',')]
     tasks = [int(x) for x in a.tasks.split(',')]
@@ -223,7 +227,7 @@ def main():
                 json.dump(res, fh, indent=1)
             print(f'{method:28s} task {task}: success {np.mean(succ):.2f} ({sum(succ)}/{len(succ)})  '
                   f'{time.time() - t0:.0f}s', flush=True)
-    report(res, methods, tasks, list(planner.models), a.out, a.env)
+    report(res, methods, tasks, list(planner.models), a.out, a.env + ('' if a.ood == 'none' else f' [{a.ood}]'))
 
 
 def report(res, methods, tasks, models, out, env_name):

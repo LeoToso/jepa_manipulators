@@ -88,6 +88,7 @@ def main():
     p.add_argument('--max-steps', type=int, default=0)
     p.add_argument('--seed', type=int, default=0, help='the evaluation seed (jepa.ogb_eval --seed)')
     p.add_argument('--device', default='cuda')
+    p.add_argument('--ood', default='none', help='visual perturbation (jepa.ogb_ood)')
     p.add_argument('--strip', default='', help='instead of GIFs: one figure, a row of frames per task, '
                    'for this single method (e.g. "MSP+SIG+SF (value)")')
     p.add_argument('--n-frames', type=int, default=8, help='frames per row in --strip mode')
@@ -96,6 +97,8 @@ def main():
     methods = [m.strip() for m in a.methods.split(',')]
     planner = Planner(a, dev)
     env = _env(a.env)
+    from jepa.ogb_ood import apply_ood
+    apply_ood(env, a.ood)
     env.reset(seed=a.seed)
     cam = HiResCamera(env, a.size, a.camera)
     res_path = os.path.join(a.eval_dir, 'results.json')
