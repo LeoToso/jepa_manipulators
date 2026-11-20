@@ -251,7 +251,8 @@ def report(res, methods, tasks, models, out, env_name):
     md += ['', 'Paired differences in success rate (same episodes), 95% bootstrap interval:', '',
            '| A vs B | A - B (points) | 95% CI | p |', '|---|---|---|---|']
     wm = [m for m in methods if m not in ('policy', 'consensus')]
-    pairs = [('consensus', 'policy')] + [(m, b) for m in wm for b in ('policy', 'consensus')]
+    refs = [r_ for r_ in ('policy', 'consensus') if r_ in methods]
+    pairs = ([('consensus', 'policy')] if len(refs) == 2 else []) + [(m, b) for m in wm for b in refs]
     pairs += [(wm[j], wm[i]) for i in range(len(wm)) for j in range(i + 1, len(wm))]
     for a_, b_ in pairs:
         if True:
