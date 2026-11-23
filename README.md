@@ -294,3 +294,16 @@ linear readout of effector / cube position and gripper opening from the k leadin
 directions (fig_ogb_pc_error), an MLP state decoder on frozen latents (fig_ogb_decoded), and the
 decoded error of open-loop predictions with the recorded actions (fig_ogb_prediction).
 `jepa.ogb_video` makes side-by-side GIFs of several methods on the same evaluation episode.
+
+### Other OGBench environments (double / triple cube, scene, puzzle)
+
+`scripts/ogb_suite.sh ENV STAGE [GPU]` runs every step for one environment with its settings
+(ENV: cube-single, cube-double, cube-triple, scene, puzzle-3x3, puzzle-4x4, puzzle-4x5, puzzle-4x6;
+append `:noisy` for the noisy datasets). Stages: data, viz, wm-sig, wm-gcb, wm-sf, dp, eval,
+disturb, video, analysis. Per environment it sets the hindsight-goal range to half the evaluation
+episode length L (in latent steps), the SF discount to a value horizon of about L/4 latent steps
+(gamma 0.98 / 0.99 / 0.993 / 0.995 for L = 200 / 500 / 750 / 1000), and the window stride to the
+dataset size. The cache stores the object state of each environment (`obj_state`: cubes and the
+drawer / window slides in units of 5 cm, button states 0/1), which GCB's state reward compares
+(per-cube distance for the cube environments, mean absolute difference otherwise). Pushes are
+only used where there is a cube (not in the puzzles).

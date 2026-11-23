@@ -158,6 +158,8 @@ def main():
     if cache.meta['image_size'] != int(mc['image_size']):
         raise ValueError(f'cache images are {cache.meta["image_size"]}px but model.image_size='
                          f'{mc["image_size"]}; rebuild the cache or change the config')
+    if 'gcb_obj_mode' not in tc and 'gcb_obj_mode' in cache.meta:  # OGBench caches state how to compare objects
+        tc['gcb_obj_mode'] = cache.meta['gcb_obj_mode']
     train_loader, val_loader, stats, pstats = make_loaders(cache, cfg, int(tc['batch_size']),
                                                            int(tc.get('num_workers', 4)), args.seed)
     if pstats is not None:

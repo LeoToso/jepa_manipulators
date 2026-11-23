@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Look at an OGBench cube cache before training.
+"""Look at an OGBench cache (cube, scene or puzzle) before training.
 
     MUJOCO_GL=egl python -m jepa.ogb_viz --cache /mnt/t7shield/cache_ogb_cube_single --out figures/ogb_data
 
@@ -52,6 +52,9 @@ def main():
     c = Cache(a.cache)
     low, rng = c.low, np.random.RandomState(a.seed)
     acts = c.actions('stored')
+    has_cube = 'obj_pos' in low
+    # without cubes (puzzle): show the object features (button states) where the cube plots would be
+    obj = low['obj_pos'] if has_cube else low.get('obj_state', np.zeros((len(acts), 3), np.float32))
     n_ep = len(c.lengths)
     print(f'{n_ep} episodes, {len(acts)} frames, images {c.images.shape[1:]}; splits '
           + ', '.join(f'{k}={len(v)}' for k, v in c.meta['splits'].items()))
@@ -82,8 +85,9 @@ def main():
     for t in range(0, min(L, a.gif_steps)):
         im = Image.fromarray(np.asarray(c.images[s0 + t])).resize((256, 256), Image.NEAREST)
         d = ImageDraw.Draw(im)
-        d.text((4, 4), f't={t}  cube z={100 * low["obj_pos"][s0 + t, 2]:.1f} cm  grip={low["gripper"][s0 + t, 0]:.2f}',
-               fill=(255, 255, 255))
+        txt = (f'cube z={100 * low["obj_pos"][s0 + t, 2]:.1f} cm  ' if has_cube else
+               f'buttons on={int(low["obj_state"][s0 + t].sum())}  ' if 'obj_state' in low else '')
+        d.text((4, 4), f't={t}  {txt}grip={low["gripper"][s0 + t, 0]:.2f}', fill=(255, 255, 255))
         imgs.append(im)
     imgs[0].save(os.path.join(a.out, 'episode.gif'), save_all=True, append_images=imgs[1:], duration=60, loop=0)
     print('  wrote episode.gif')
@@ -97,22 +101,30 @@ def main():
         ax.set_title(f'action {ACTION_NAMES[k]}')
         ax.set_yscale('log')
     ax = axes[1, 0]
-    obj = low['obj_pos']
-    ax.hist2d(obj[sub, 0], obj[sub, 1], bins=60, cmap='Blues')
-    ax.set_title('cube x-y coverage')
-    ax.set_xlabel('x [m]')
-    ax.set_ylabel('y [m]')
+    if has_cube:
+        ax.hist2d(obj[sub, 0], obj[sub, 1], bins=60, cmap='Blues')
+        ax.set_title('cube x-y coverage (first cube)')
+        ax.set_xlabel('x [m]')
+        ax.set_ylabel('y [m]')
+    else:
+        ax.bar(np.arange(obj.shape[1]), obj.mean(0), color=BLUE)
+        ax.set_title('fraction of frames each object feature is on')
+        ax.set_xlabel('feature')
     ax = axes[1, 1]
     ee = low['x_ee']
     ax.hist2d(ee[sub, 0], ee[sub, 1], bins=60, cmap='Oranges')
     ax.set_title('effector x-y coverage')
     ax.set_xlabel('x [m]')
     ax = axes[1, 2]
-    ax.hist(100 * obj[sub, 2], bins=80, color=AQUA)
-    lifted = (obj[:, 2] > 0.04).mean()
-    ax.set_yscale('log')
-    ax.set_title(f'cube height (lifted > 4 cm: {100 * lifted:.1f}% of frames)')
-    ax.set_xlabel('z [cm]')
+    if has_cube:
+        ax.hist(100 * obj[sub, 2], bins=80, color=AQUA)
+        lifted = (obj[:, 2] > 0.04).mean()
+        ax.set_yscale('log')
+        ax.set_title(f'cube height (lifted > 4 cm: {100 * lifted:.1f}% of frames)')
+        ax.set_xlabel('z [cm]')
+    else:
+        ax.hist(obj[sub].sum(1), bins=np.arange(obj.shape[1] + 2) - 0.5, color=AQUA)
+        ax.set_title('number of features on per frame')
     ax = axes[1, 3]
     ax.hist(low['gripper'][sub, 0], bins=50, color=INK2)
     ax.set_title('gripper opening (0 open, 1 closed)')
@@ -128,9 +140,13 @@ def main():
     fig, axes = plt.subplots(3, 1, figsize=(12, 7), sharex=True)
     for k, nm, col in ((0, 'x', BLUE), (1, 'y', ORANGE), (2, 'z', AQUA)):
         axes[0].plot(t, 100 * ee[sl, k], color=col, label=f'effector {nm}')
-        axes[1].plot(t, 100 * obj[sl, k], color=col, label=f'cube {nm}')
+        if has_cube:
+            axes[1].plot(t, 100 * obj[sl, k], color=col, label=f'cube {nm}')
+    if not has_cube:
+        axes[1].imshow(obj[sl].T, aspect='auto', cmap='Blues', interpolation='nearest', extent=(0, L, obj.shape[1] - 0.5, -0.5))
+        axes[1].plot([], [], color=BLUE, label='object features (rows)')
     axes[0].set_ylabel('effector [cm]')
-    axes[1].set_ylabel('cube [cm]')
+    axes[1].set_ylabel('cube [cm]' if has_cube else 'feature')
     axes[2].plot(t, low['gripper'][sl, 0], color=INK, label='gripper opening')
     axes[2].plot(t, acts[sl, 4], color=ORANGE, lw=0.8, alpha=0.8, label='action dgripper')
     axes[2].set_ylabel('gripper')

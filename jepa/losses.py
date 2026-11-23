@@ -84,7 +84,7 @@ def prediction_loss(model, z, actions, mode, one_step_context='window'):
 
 
 def gcb_reward(kind, goal_offset, next_state=None, goal_state=None, z_next=None, z_goal=None,
-               state_scales=(0.05, 0.5, 2.0)):
+               state_scales=(0.05, 0.5, 2.0), obj_mode='cubes'):
     """Reward-free goal-reaching reward r(s, a, g), evaluated at the next state s'.
 
     indicator       1[s' = g] (the paper's sparse reward). With hindsight goals on logged,
@@ -104,9 +104,13 @@ def gcb_reward(kind, goal_offset, next_state=None, goal_state=None, z_next=None,
         drot = 2 * torch.acos(dot)
         dgrip = (next_state[:, 7] - goal_state[:, 7]).abs()
         sp, sq, sg = state_scales[:3]
-        if next_state.shape[1] > 8:  # object positions (OGBench cubes, 3 each), same scale as the EE position
-            dobj = (next_state[:, 8:] - goal_state[:, 8:]).reshape(len(next_state), -1, 3).norm(dim=-1).mean(-1)
-            return -(dpos / sp + drot / sq + dgrip / sg + dobj / sp) / 4
+        if next_state.shape[1] > 8:  # scaled object features (OGBench): cubes / 5 cm, slides / 5 cm, buttons
+            d_ = next_state[:, 8:] - goal_state[:, 8:]
+            if obj_mode == 'cubes':   # 3-D distance per cube (in units of 5 cm), averaged over cubes
+                dobj = d_.reshape(len(d_), -1, 3).norm(dim=-1).mean(-1)
+            else:                     # any objects: mean absolute difference of the scaled features
+                dobj = d_.abs().mean(-1)
+            return -(dpos / sp + drot / sq + dgrip / sg + dobj) / 4
         return -(dpos / sp + drot / sq + dgrip / sg) / 3
     if kind == 'latent_distance':
         # on the sphere-projected latent: bounded and independent of the latent's scale. On the
@@ -240,7 +244,7 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False, sf_target=N
         kind = str(tc.get('gcb_reward', 'state_distance'))
         r = gcb_reward(kind, k, batch.get('next_state', torch.zeros(1)).to(device),
                        batch.get('goal_state', torch.zeros(1)).to(device), z[:, 1], z_goal,
-                       tuple(tc.get('gcb_state_scales', (0.05, 0.5, 2.0))))
+                       tuple(tc.get('gcb_state_scales', (0.05, 0.5, 2.0))), str(tc.get('gcb_obj_mode', 'cubes')))
         r = r * float(tc.get('gcb_reward_scale', 1.0))
         l_phi, l_psi, l_rew = gcb_losses(
             model, model.encoder_input(obs[:, 0], prev[:, 0]), model.encoder_input(obs[:, 1], prev[:, 1]),

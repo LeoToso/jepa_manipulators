@@ -47,6 +47,8 @@ def apply_ood(env, name):
             m.light_diffuse[:] *= np.array([1.25, 0.95, 0.55])
             m.light_ambient[:] *= np.array([1.25, 0.95, 0.55])
         elif n == 'cube':
+            if not hasattr(u, '_cube_colors'):
+                raise SystemExit('the cube perturbation needs a cube environment')
             u._cube_colors[0] = np.array([0.20, 0.45, 0.95, 1.0])
         elif n == 'camera':
             cid = m.cam('front_pixels').id
@@ -68,7 +70,7 @@ def main():
 
     from jepa.ogb_data import _env
     os.makedirs(a.out, exist_ok=True)
-    rows = ['none'] + PERTURBATIONS
+    rows = ['none'] + [n for n in PERTURBATIONS if n != 'cube' or 'puzzle' not in a.env]
     fig, axes = plt.subplots(2, len(rows), figsize=(1.9 * len(rows), 4.0), squeeze=False)
     for j, n in enumerate(rows):
         env = _env(a.env)

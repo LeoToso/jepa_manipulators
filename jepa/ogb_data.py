@@ -62,22 +62,44 @@ def download(dataset, out_dir):
     ogbench.download_datasets([dataset], os.path.expanduser(out_dir))
 
 
-def collect(env_name, n_episodes, out, max_steps=1001, noise=0.1, noise_smoothing=0.5, seed=0):
-    """OGBench's 'play' data generation for the cube environments (data_gen_scripts/
-    generate_manipspace.py with --dataset_type=play), writing the same .npz files."""
-    from collections import defaultdict
-
+def _agents(env, env_name, noise=0.1, noise_smoothing=0.5):
+    """OGBench's 'play' oracles (non-Markovian, plan-based) for each environment family."""
+    from ogbench.manipspace.oracles.plan.button_plan import ButtonPlanOracle
     from ogbench.manipspace.oracles.plan.cube_plan import CubePlanOracle
+    from ogbench.manipspace.oracles.plan.drawer_plan import DrawerPlanOracle
+    from ogbench.manipspace.oracles.plan.window_plan import WindowPlanOracle
+    kw = dict(env=env, noise=noise, noise_smoothing=noise_smoothing)
+    if 'cube' in env_name:
+        return {'cube': CubePlanOracle(**kw)}
+    if 'scene' in env_name:
+        return {'cube': CubePlanOracle(**kw), 'button': ButtonPlanOracle(**kw),
+                'drawer': DrawerPlanOracle(**kw), 'window': WindowPlanOracle(**kw)}
+    if 'puzzle' in env_name:
+        return {'button': ButtonPlanOracle(gripper_always_closed=True, **kw)}
+    raise SystemExit(f'no oracle for {env_name}')
+
+
+def collect(env_name, n_episodes, out, max_steps=1001, noise=0.1, noise_smoothing=0.5, seed=0):
+    """OGBench's 'play' data generation (data_gen_scripts/generate_manipspace.py with
+    --dataset_type=play) for the cube, scene and puzzle environments, writing the same .npz files
+    (including qpos, qvel and, where present, button_states). The scene health check of the
+    original script (cube visible) is not repeated."""
+    from collections import defaultdict
     np.random.seed(seed)
     env = _env(env_name, terminate_at_goal=False, mode='data_collection', max_episode_steps=max_steps)
-    agent = CubePlanOracle(env=env, noise=noise, noise_smoothing=noise_smoothing)
+    agents = _agents(env, env_name, noise, noise_smoothing)
+    has_buttons = hasattr(env.unwrapped, '_cur_button_states')
     data = defaultdict(list)
     n_val = max(1, n_episodes // 10)
     train_steps = 0
     for ep in range(n_episodes + n_val):
         ob, info = env.reset(seed=seed + ep)
-        p_stack = {'single': 0.0, 'double': np.random.uniform(0, 0.25), 'triple': np.random.uniform(0.05, 0.35),
-                   'quadruple': np.random.uniform(0.1, 0.5)}.get(env_name.split('-')[-2], 0.0)
+        if 'cube' in env_name:
+            p_stack = {'single': 0.0, 'double': np.random.uniform(0, 0.25), 'triple': np.random.uniform(0.05, 0.35),
+                       'quadruple': np.random.uniform(0.1, 0.5)}.get(env_name.split('-')[-2], 0.0)
+        else:
+            p_stack = 0.5
+        agent = agents[info['privileged/target_task']]
         agent.reset(ob, info)
         done, steps = False, 0
         while not done:
@@ -86,12 +108,15 @@ def collect(env_name, n_episodes, out, max_steps=1001, noise=0.1, noise_smoothin
             done = term or trunc
             if agent.done:
                 aob, ainfo = env.unwrapped.set_new_target(p_stack=p_stack)
+                agent = agents[ainfo['privileged/target_task']]
                 agent.reset(aob, ainfo)
             data['observations'].append(ob)
             data['actions'].append(action)
             data['terminals'].append(done)
             data['qpos'].append(info['prev_qpos'])
             data['qvel'].append(info['prev_qvel'])
+            if has_buttons:
+                data['button_states'].append(info['prev_button_states'])
             ob = nob
             steps += 1
         if ep < n_episodes:
@@ -99,8 +124,11 @@ def collect(env_name, n_episodes, out, max_steps=1001, noise=0.1, noise_smoothin
         print(f'  episode {ep + 1}/{n_episodes + n_val}: {steps} steps', flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(out)) or '.', exist_ok=True)
     for path, sl in ((out, slice(0, train_steps)), (out.replace('.npz', '-val.npz'), slice(train_steps, None))):
-        d = {k: np.array(v[sl], dtype=np.uint8 if (k == 'observations' and v[0].dtype == np.uint8)
-                         else (bool if k == 'terminals' else np.float32)) for k, v in data.items()}
+        d = {}
+        for k, v in data.items():
+            dtype = (np.uint8 if (k == 'observations' and v[0].dtype == np.uint8) else
+                     bool if k == 'terminals' else np.int64 if k == 'button_states' else np.float32)
+            d[k] = np.array(v[sl], dtype=dtype)
         np.savez_compressed(path, **d)
         print(f'wrote {path}: {len(d["actions"])} steps')
 
@@ -158,7 +186,7 @@ def convert(dataset, data_dir, out, env_name=None, max_train_episodes=None, seed
         ep_len = np.diff(np.concatenate([[-1], ends]))
         keep = len(ep_len) if (fi > 0 or max_train_episodes is None) else min(max_train_episodes, len(ep_len))
         n_keep = int(ep_len[:keep].sum())
-        lows.append({k: z[k][:n_keep] for k in ('actions', 'qpos', 'qvel')})
+        lows.append({k: z[k][:n_keep] for k in ('actions', 'qpos', 'qvel', 'button_states') if k in z.files})
         lengths.append(ep_len[:keep])
         which.append(np.full(keep, fi))
     lengths_all = np.concatenate(lengths)
@@ -191,8 +219,11 @@ def convert(dataset, data_dir, out, env_name=None, max_train_episodes=None, seed
     env = _env(env_name).unwrapped
     model, dat = env._model, env._data
     arm, grip_id, site = np.asarray(env._arm_joint_ids), env._gripper_opening_joint_id, env._pinch_site_id
-    n_cubes = int(getattr(env, '_num_cubes', 1))
-    obj_adr = [model.jnt_qposadr[model.joint(f'object_joint_{i}').id] for i in range(n_cubes)]
+    jnames = [model.joint(i).name for i in range(model.njnt)]
+    cube_j = sorted([n for n in jnames if n.startswith('object_joint_')], key=lambda n: int(n.rsplit('_', 1)[1]))
+    slide_j = [n for n in jnames if n in ('drawer_slide', 'window_slide')]
+    n_cubes = len(cube_j)
+    obj_adr = [model.jnt_qposadr[model.joint(n).id] for n in cube_j]
     qpos = np.concatenate([lw['qpos'] for lw in lows]).astype(np.float64)
     qvel = np.concatenate([lw['qvel'] for lw in lows]).astype(np.float64)
     ee = np.zeros((total, 3), np.float32)
@@ -210,13 +241,30 @@ def convert(dataset, data_dir, out, env_name=None, max_train_episodes=None, seed
     x_ee = np.concatenate([ee, quat], 1).astype(np.float32)
     gripper = np.clip(qpos[:, grip_id:grip_id + 1] / 0.8, 0, 1).astype(np.float32)
     starts = np.concatenate([[0], np.cumsum(lengths_all)[:-1]])
+    # object features: raw cube positions (obj_pos, m) and a scaled object-state vector (obj_state)
+    # for the GCB state reward: cube positions / 5 cm, drawer and window slides / 5 cm, button states 0/1
+    obj_arrays, feats, names = {}, [], []
+    if n_cubes:
+        obj_pos = np.concatenate([qpos[:, a_:a_ + 3] for a_ in obj_adr], 1).astype(np.float32)
+        obj_arrays['obj_pos'] = obj_pos
+        feats.append(obj_pos / 0.05)
+        names += [f'cube{i}_{c}' for i in range(n_cubes) for c in 'xyz']
+    for n_ in slide_j:
+        feats.append(qpos[:, model.jnt_qposadr[model.joint(n_).id]][:, None] / 0.05)
+        names.append(n_)
+    if all('button_states' in lw for lw in lows):
+        bs = np.concatenate([lw['button_states'] for lw in lows]).astype(np.float32).reshape(total, -1)
+        feats.append(bs)
+        names += [f'button{i}' for i in range(bs.shape[1])]
+    if feats:
+        obj_arrays['obj_state'] = np.concatenate(feats, 1).astype(np.float32)
     np.savez(os.path.join(out, 'lowdim.npz'),
              episode_lengths=lengths_all.astype(np.int64), episode_starts=starts.astype(np.int64),
              episode_task=np.zeros(len(lengths_all), np.int64),
              actions=actions, q=qpos[:, arm].astype(np.float32), dq=qvel[:, arm].astype(np.float32),
              gripper=gripper, gripper_cmd=actions[:, 4:5], x_ee=x_ee, x_ee_des=x_ee,
              v_ee=np.zeros((total, 6), np.float32),
-             obj_pos=np.concatenate([qpos[:, a:a + 3] for a in obj_adr], 1).astype(np.float32),
+             **obj_arrays,
              timestamps=np.arange(total, dtype=np.float64) * float(env._control_timestep if hasattr(env, '_control_timestep') else 0.05))
 
     rng = np.random.RandomState(seed)
@@ -224,7 +272,12 @@ def convert(dataset, data_dir, out, env_name=None, max_train_episodes=None, seed
     train = np.flatnonzero(allw == 0).tolist()
     held = rng.permutation(np.flatnonzero(allw == 1)).tolist()
     meta = {'source': f'ogbench:{dataset}', 'env_name': env_name, 'image_size': int(shape0[1]),
-            'tasks': ['cube_play'], 'num_frames': total, 'n_cubes': n_cubes,
+            'tasks': [env_name.replace('visual-', '').replace('-v0', '') + '_play'], 'num_frames': total,
+            'n_cubes': n_cubes, 'obj_features': names,
+            # GCB object reward: cube distances (3-D norm per cube) when the objects are only cubes,
+            # else the mean absolute difference of the scaled features
+            'gcb_obj_mode': 'cubes' if (n_cubes and len(names) == 3 * n_cubes) else 'scaled',
+            'max_episode_steps': int(_env(env_name).spec.max_episode_steps),
             'splits': {'train': train, 'val': sorted(held[:(len(held) + 1) // 2]),
                        'test': sorted(held[(len(held) + 1) // 2:] or held[:1])}}
     with open(os.path.join(out, 'meta.json'), 'w') as fh:
@@ -240,7 +293,7 @@ def main():
     d.add_argument('--dataset', required=True)
     d.add_argument('--dir', default='~/.ogbench/data')
     c = sub.add_parser('collect')
-    c.add_argument('--env', required=True, help='e.g. visual-cube-single-v0')
+    c.add_argument('--env', required=True, help='e.g. visual-cube-double-v0, visual-scene-v0, visual-puzzle-3x3-v0')
     c.add_argument('--episodes', type=int, default=1000)
     c.add_argument('--max-steps', type=int, default=1001)
     c.add_argument('--out', required=True, help='.npz path; the validation file is written next to it')

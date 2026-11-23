@@ -381,12 +381,15 @@ class WindowDataset(Dataset):
 
     def _state(self, frame):
         """Measured [EE position (3), quaternion w-x-y-z (4), gripper (1)] of one frame, followed by
-        the object position (3) when the cache has one (OGBench: the cube)."""
+        the scaled object features when the cache has them (OGBench: cubes / 5 cm, drawer and window
+        slides / 5 cm, button states)."""
         low = self.cache.low
         q = to_wxyz(low['x_ee'][frame, 3:7].astype(np.float64), self.cache.quat_order)
         parts = [low['x_ee'][frame, :3], q, low['gripper'][frame, :1]]
-        if 'obj_pos' in low:
-            parts.append(low['obj_pos'][frame, :3])
+        if 'obj_state' in low:     # scaled object features (OGBench caches converted by jepa.ogb_data)
+            parts.append(low['obj_state'][frame])
+        elif 'obj_pos' in low:     # older single-cube caches: cube position, scaled by 5 cm
+            parts.append(low['obj_pos'][frame] / 0.05)
         return torch.from_numpy(np.concatenate(parts).astype(np.float32))
 
     def _frames(self, idx):

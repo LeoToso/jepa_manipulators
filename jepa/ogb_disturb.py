@@ -6,9 +6,10 @@ states). Used by jepa.ogb_eval --disturb SPEC; preview with
 
 SPEC (strength after the colon, optional):
     none            no disturbance
-    push[:d]        once per episode the cube is knocked away from the goal by d metres (default
+    push[:d]        once per episode the (first) cube is knocked away from its goal by d metres (default
                     0.08) and dropped on the table: the first time it is lifted above 4 cm (i.e. out
-                    of the gripper during transport), or at step 80 if it has not been lifted by then
+                    of the gripper during transport), or at step 80 if it has not been lifted by then;
+                    cube and scene environments only (in scene the direction is random)
     noise[:s]       Gaussian noise of std s (default 0.2, in the [-1, 1] action range) on the motion
                     dims of every executed action (dx, dy, dz, dyaw; not the gripper)
     burst[:p]       at every step, with probability p (default 0.03), a burst of 5 uniformly random
@@ -55,12 +56,19 @@ class Disturbance:
             return False
         import mujoco
         u = env.unwrapped
-        j = u._data.joint('object_joint_0')
+        try:
+            j = u._data.joint('object_joint_0')
+        except KeyError:
+            raise SystemExit('push needs a cube (cube and scene environments); use noise or burst for puzzle')
         pos = j.qpos[:3].copy()
         if pos[2] <= 0.04 and t < 80:
             return False
-        goal = np.asarray(u.cur_task_info['goal_xyzs'][0][:2])
-        away = pos[:2] - goal
+        goals = (getattr(u, 'cur_task_info', None) or {}).get('goal_xyzs')
+        if goals is not None and len(goals):   # cube environments: away from the cube's goal
+            away = pos[:2] - np.asarray(goals[0][:2])
+        else:                                  # scene: in a random direction
+            th = self.rng.uniform(0, 2 * np.pi)
+            away = np.array([np.cos(th), np.sin(th)])
         away = away / (np.linalg.norm(away) + 1e-9)
         ang = self.rng.uniform(-np.pi / 3, np.pi / 3)                     # within 60 deg of "away from goal"
         rot = np.array([[np.cos(ang), -np.sin(ang)], [np.sin(ang), np.cos(ang)]])

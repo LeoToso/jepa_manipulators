@@ -129,6 +129,17 @@ def main():
 TASK_NAMES = {1: 'horizontal', 2: 'vertical 1', 3: 'vertical 2', 4: 'diagonal 1', 5: 'diagonal 2'}
 
 
+def task_name(env, task):
+    """Short task name: the single-cube names above, else OGBench's own (e.g. 'double_pnp1')."""
+    try:
+        name = env.unwrapped.task_infos[task - 1]['task_name']
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return ''
+    if 'single' in env.spec.id and 'cube' in env.spec.id:
+        return TASK_NAMES.get(task, name)
+    return name.replace('_', ' ')
+
+
 def strip_figure(a, env, planner, cam, res, out):
     """fig_task_strips: one row per task, --n-frames frames evenly spaced over one episode of the
     --strip method (an episode where it succeeded, from results.json), then the goal image."""
@@ -156,7 +167,7 @@ def strip_figure(a, env, planner, cam, res, out):
             ax.set_title(f'step {i}' + (' (success)' if ok and i == idx[-1] else ''), fontsize=8,
                          color='#1baf7a' if ok and i == idx[-1] else '#0b0b0b')
             if c_ == 0:
-                ax.set_ylabel(f'task {task}\n{TASK_NAMES.get(task, "")}', fontsize=9)
+                ax.set_ylabel(f'task {task}\n{task_name(env, task)}', fontsize=9)
         ax = axes[r, n]
         ax.imshow(goal)
         ax.set_xticks([])
@@ -166,7 +177,7 @@ def strip_figure(a, env, planner, cam, res, out):
             sp.set_linewidth(2)
         ax.set_title('goal image', fontsize=8)
     fig.subplots_adjust(top=0.9)
-    fig.suptitle(f'OGBench visual-cube-single: one episode per task ({PRETTY.get(m, m)})', fontsize=10, y=0.96)
+    fig.suptitle(f'OGBench {a.env.replace("-v0", "")}: one episode per task ({PRETTY.get(m, m)})', fontsize=10, y=0.96)
     for ext in ('png', 'pdf'):
         fig.savefig(os.path.join(out, f'fig_task_strips.{ext}'), dpi=200, bbox_inches='tight')
     plt.close(fig)

@@ -44,7 +44,8 @@ plt.rcParams.update({
     'grid.color': GRID, 'grid.linewidth': 0.6, 'legend.frameon': False, 'figure.facecolor': 'white',
     'savefig.facecolor': 'white', 'lines.linewidth': 2.0, 'pdf.fonttype': 42,
 })
-# target columns: effector xyz (m), cube xyz (m), gripper opening
+# target columns: effector xyz (m), object (first cube xyz in m, or puzzle button states), gripper
+# opening; set in main() from the cache
 QUANT = (('effector position', slice(0, 3), 'cm', 100.0), ('cube position', slice(3, 6), 'cm', 100.0),
          ('gripper opening', slice(6, 7), '% of range', 100.0))
 
@@ -150,7 +151,18 @@ def main():
     rng = np.random.RandomState(a.seed)
     c = Cache(a.cache)
     low = c.low
-    Y_all = np.concatenate([low['x_ee'][:, :3], low['obj_pos'][:, :3], low['gripper'][:, :1]], 1).astype(np.float32)
+    global QUANT
+    if 'obj_pos' in low:      # cube environments and scene: the first cube's position
+        obj, obj_q, obj_dec = low['obj_pos'][:, :3], ('cube position', 'cm', 100.0), ('cube y position', 1, 100.0, 'cm')
+    else:                     # puzzle: the button states (0 / 1)
+        obj = low['obj_state']
+        obj_q, obj_dec = ('button states', '0-1', 1.0), ('button 0 state', 0, 1.0, '0-1')
+    no = obj.shape[1]
+    QUANT = (('effector position', slice(0, 3), 'cm', 100.0), (obj_q[0], slice(3, 3 + no), obj_q[1], obj_q[2]),
+             ('gripper opening', slice(3 + no, 4 + no), '% of range', 100.0))
+    DEC_ROWS = (('effector height', 2, 100.0, 'cm'), (obj_dec[0], 3 + obj_dec[1], obj_dec[2], obj_dec[3]),
+                ('gripper opening', 3 + no, 1.0, '0 open - 1 closed'))
+    Y_all = np.concatenate([low['x_ee'][:, :3], obj, low['gripper'][:, :1]], 1).astype(np.float32)
     tr_eps = sorted(rng.choice(c.split_episodes('train'), min(a.train_episodes, len(c.split_episodes('train'))),
                                replace=False))
     ho_eps = c.split_episodes('val') + c.split_episodes('test')
@@ -202,8 +214,7 @@ def main():
 
     # ---- decoded vs measured -----------------------------------------------------------------------
     pts = rng.choice(len(ho), min(3000, len(ho)), replace=False)
-    rows = (('effector height', 2, 100.0, 'cm'), ('cube y position', 4, 100.0, 'cm'),
-            ('gripper opening', 6, 1.0, '0 open - 1 closed'))
+    rows = DEC_ROWS
     fig, axes = plt.subplots(len(rows), len(models), figsize=(3.4 * len(models), 3.3 * len(rows)), squeeze=False)
     for j, m in enumerate(models):
         pred = m.dec(m.z_ho)
