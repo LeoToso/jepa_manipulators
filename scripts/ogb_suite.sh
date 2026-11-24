@@ -52,6 +52,8 @@ case $NAME in
   *) echo "unknown environment $NAME"; exit 1 ;;
 esac
 GOAL_MAX=$((L / 2))
+# DP hindsight goals: offset ~ Geometric(p) env steps with mean 1/p = L/2 (cube-single: 0.01 -> 100)
+DP_GOAL_P=$(python -c "print(round(2 / $L, 5))")
 PUSH=1; [[ $NAME == puzzle-* ]] && PUSH=0      # nothing to push in the puzzles (buttons only)
 
 # training windows: every 4th frame for 1M frames (cube-single), scaled with the dataset size so an
@@ -89,24 +91,24 @@ case $STAGE in
   dp)
     mkdir -p "$RUNS"
     STEPS=${DP_STEPS:-$([[ $L -ge 750 ]] && echo 100000 || echo 60000)}
-    python -m jepa.dp_train --cache "$CACHE" --out "$RUNS/dp" --goal-cond --action-mode stored --amp \
-      --steps "$STEPS" 2>&1 | tee "$RUNS/dp.log" ;;
+    python -m jepa.dp_train --cache "$CACHE" --out "$RUNS/${DP_NAME:-dp}" --goal-cond --action-mode stored --amp \
+      --goal-p "${DP_GOAL_P_OVERRIDE:-$DP_GOAL_P}" --steps "$STEPS" 2>&1 | tee "$RUNS/${DP_NAME:-dp}.log" ;;
   all-wm)
     for s in wm-sig wm-gcb wm-sf dp; do bash "$0" "$ENVKEY" $s "$GPU"; done ;;
   eval)
     mkdir -p "$EVAL" "$(dirname "$EVAL")"
-    python -m jepa.ogb_eval --env "$ENV" --dp "$RUNS/dp" --out "$EVAL" --episodes-per-task "$EPISODES" \
+    python -m jepa.ogb_eval --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --out "$EVAL" --episodes-per-task "$EPISODES" \
       "${MODELS[@]}" 2>&1 | tee "$EVAL.log" ;;
   disturb)
     CONDS="noise:0.2 noise:0.4 burst:0.03"; [[ $PUSH == 1 ]] && CONDS="push:0.08 $CONDS"
     for D in $CONDS; do
-      python -m jepa.ogb_eval --env "$ENV" --dp "$RUNS/dp" --out "${EVAL}_disturb_${D/:/_}" --disturb "$D" \
+      python -m jepa.ogb_eval --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --out "${EVAL}_disturb_${D/:/_}" --disturb "$D" \
         --episodes-per-task "$EPISODES" --methods "$METHODS" "${MODELS[@]}" 2>&1 | tee "${EVAL}_disturb_${D/:/_}.log"
     done ;;
   video)
-    python -m jepa.ogb_video --env "$ENV" --dp "$RUNS/dp" --eval-dir "$EVAL" --methods "$METHODS" \
+    python -m jepa.ogb_video --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --eval-dir "$EVAL" --methods "$METHODS" \
       "${MODELS[@]}" --prefer "MSP+SIG+SF (value)" --tasks 1,2,3,4,5
-    python -m jepa.ogb_video --env "$ENV" --dp "$RUNS/dp" --eval-dir "$EVAL" --methods "MSP+SIG+SF (value)" \
+    python -m jepa.ogb_video --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --eval-dir "$EVAL" --methods "MSP+SIG+SF (value)" \
       --strip "MSP+SIG+SF (value)" "${MODELS[@]}" --tasks 1,2,3,4,5 ;;
   analysis)
     python -m jepa.ogb_analysis --cache "$CACHE" --out "$FIG/latent" "${MODELS[@]}" ;;
