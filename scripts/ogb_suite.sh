@@ -17,7 +17,8 @@
 #        all-wm    wm-sig, wm-gcb, wm-sf and dp one after the other on one GPU
 # GPU    CUDA device index (default 0)
 #
-# Paths (override with environment variables): DATA_DIR (OGBench .npz files), CACHE_ROOT (caches),
+# Paths (override with environment variables): OUT_ROOT (root of runs/, eval/, figures/; default
+# the repo), DATA_DIR (OGBench .npz files), CACHE_ROOT (caches),
 # RUNS (runs/ogb/<ENV>), EVAL (eval/ogb_<ENV>), FIG (figures/ogb_<ENV>), EPISODES (per task, 20),
 # PROP=1 for the proprio variant (configs/ogb/*_prop.yaml, runs and outputs suffixed _prop).
 set -euo pipefail
@@ -32,9 +33,10 @@ CACHE_ROOT=${CACHE_ROOT:-/mnt/t7shield}
 TAG=${NAME//-/_}$([[ $DTYPE != play ]] && echo _$DTYPE || true)
 CACHE=$CACHE_ROOT/cache_ogb_$TAG
 SUF=$([[ ${PROP:-0} == 1 ]] && echo _prop || true)
-RUNS=${RUNS:-runs/ogb/$TAG$SUF}
-EVAL=${EVAL:-eval/ogb_$TAG$SUF}
-FIG=${FIG:-figures/ogb_$TAG$SUF}
+OUT_ROOT=${OUT_ROOT:-.}       # e.g. /mnt/t7shield to keep runs, evaluations and figures off the home disk
+RUNS=${RUNS:-$OUT_ROOT/runs/ogb/$TAG$SUF}
+EVAL=${EVAL:-$OUT_ROOT/eval/ogb_$TAG$SUF}
+FIG=${FIG:-$OUT_ROOT/figures/ogb_$TAG$SUF}
 EPISODES=${EPISODES:-20}
 
 # ---- per-environment settings --------------------------------------------------------------------
@@ -74,6 +76,7 @@ train_wm() {   # $1 = config name
           data.start_stride=$s data.val_start_stride=$((4 * s)) 2>&1 | tee "$RUNS/$1.log"
 }
 
+mkdir -p "$RUNS" "$(dirname "$EVAL")" "$FIG"
 case $STAGE in
   data)
     python -m jepa.ogb_data download --dataset "$DATASET" --dir "$DATA_DIR"
@@ -91,7 +94,7 @@ case $STAGE in
   all-wm)
     for s in wm-sig wm-gcb wm-sf dp; do bash "$0" "$ENVKEY" $s "$GPU"; done ;;
   eval)
-    mkdir -p "$EVAL"
+    mkdir -p "$EVAL" "$(dirname "$EVAL")"
     python -m jepa.ogb_eval --env "$ENV" --dp "$RUNS/dp" --out "$EVAL" --episodes-per-task "$EPISODES" \
       "${MODELS[@]}" 2>&1 | tee "$EVAL.log" ;;
   disturb)
