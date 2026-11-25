@@ -35,6 +35,8 @@ CACHE=$CACHE_ROOT/cache_ogb_$TAG
 SUF=$([[ ${PROP:-0} == 1 ]] && echo _prop || true)
 OUT_ROOT=${OUT_ROOT:-.}       # e.g. /mnt/t7shield to keep runs, evaluations and figures off the home disk
 RUNS=${RUNS:-$OUT_ROOT/runs/ogb/$TAG$SUF}
+# the DP always sees proprio, so PROP=1 reuses the DP of the pixel runs
+DP_DIR=${DP_DIR:-$OUT_ROOT/runs/ogb/$TAG/${DP_NAME:-dp}}
 EVAL=${EVAL:-$OUT_ROOT/eval/ogb_$TAG$SUF}
 FIG=${FIG:-$OUT_ROOT/figures/ogb_$TAG$SUF}
 EPISODES=${EPISODES:-20}
@@ -89,26 +91,26 @@ case $STAGE in
   wm-gcb) train_wm msp_gcb_sigreg ;;
   wm-sf)  train_wm msp_sigreg_sf ;;
   dp)
-    mkdir -p "$RUNS"
+    mkdir -p "$(dirname "$DP_DIR")"
     STEPS=${DP_STEPS:-$([[ $L -ge 750 ]] && echo 100000 || echo 60000)}
-    python -m jepa.dp_train --cache "$CACHE" --out "$RUNS/${DP_NAME:-dp}" --goal-cond --action-mode stored --amp \
-      --goal-p "${DP_GOAL_P_OVERRIDE:-$DP_GOAL_P}" --steps "$STEPS" 2>&1 | tee "$RUNS/${DP_NAME:-dp}.log" ;;
+    python -m jepa.dp_train --cache "$CACHE" --out "$DP_DIR" --goal-cond --action-mode stored --amp \
+      --goal-p "${DP_GOAL_P_OVERRIDE:-$DP_GOAL_P}" --steps "$STEPS" 2>&1 | tee "$DP_DIR.log" ;;
   all-wm)
     for s in wm-sig wm-gcb wm-sf dp; do bash "$0" "$ENVKEY" $s "$GPU"; done ;;
   eval)
     mkdir -p "$EVAL" "$(dirname "$EVAL")"
-    python -m jepa.ogb_eval --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --out "$EVAL" --episodes-per-task "$EPISODES" \
+    python -m jepa.ogb_eval --env "$ENV" --dp "$DP_DIR" --out "$EVAL" --episodes-per-task "$EPISODES" \
       "${MODELS[@]}" 2>&1 | tee "$EVAL.log" ;;
   disturb)
     CONDS="noise:0.2 noise:0.4 burst:0.03"; [[ $PUSH == 1 ]] && CONDS="push:0.08 $CONDS"
     for D in $CONDS; do
-      python -m jepa.ogb_eval --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --out "${EVAL}_disturb_${D/:/_}" --disturb "$D" \
+      python -m jepa.ogb_eval --env "$ENV" --dp "$DP_DIR" --out "${EVAL}_disturb_${D/:/_}" --disturb "$D" \
         --episodes-per-task "$EPISODES" --methods "$METHODS" "${MODELS[@]}" 2>&1 | tee "${EVAL}_disturb_${D/:/_}.log"
     done ;;
   video)
-    python -m jepa.ogb_video --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --eval-dir "$EVAL" --methods "$METHODS" \
+    python -m jepa.ogb_video --env "$ENV" --dp "$DP_DIR" --eval-dir "$EVAL" --methods "$METHODS" \
       "${MODELS[@]}" --prefer "MSP+SIG+SF (value)" --tasks 1,2,3,4,5
-    python -m jepa.ogb_video --env "$ENV" --dp "$RUNS/${DP_NAME:-dp}" --eval-dir "$EVAL" --methods "MSP+SIG+SF (value)" \
+    python -m jepa.ogb_video --env "$ENV" --dp "$DP_DIR" --eval-dir "$EVAL" --methods "MSP+SIG+SF (value)" \
       --strip "MSP+SIG+SF (value)" "${MODELS[@]}" --tasks 1,2,3,4,5 ;;
   analysis)
     python -m jepa.ogb_analysis --cache "$CACHE" --out "$FIG/latent" "${MODELS[@]}" ;;
