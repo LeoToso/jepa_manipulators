@@ -255,6 +255,13 @@ class WorldModel(nn.Module):
             if cfg.get('use_endpoint_inverse', False) else None)
         self.successor = (SuccessorPredictor(d, int(cfg.get('sf_hidden_dim', 1024)))
                           if cfg.get('use_successor', False) else None)
+        # auxiliary readout of the measured state (effector, gripper[, objects]) from z
+        self.state_head = None
+        if cfg.get('state_head', 'none') != 'none':
+            n = len(cfg['state_cols'])
+            self.state_head = nn.Sequential(nn.Linear(d, 256), nn.GELU(), nn.Linear(256, n))
+            self.register_buffer('state_mean', torch.tensor(cfg['state_mean'], dtype=torch.float32))
+            self.register_buffer('state_std', torch.tensor(cfg['state_std'], dtype=torch.float32))
         self.gcb = (GCBHeads(dict(enc_kwargs, depth=int(cfg.get('gcb_vit_depth', enc_kwargs['depth']))),
                              d, int(cfg.get('gcb_hidden_dim', 512)))
                     if cfg.get('use_gcb', False) else None)

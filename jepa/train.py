@@ -55,11 +55,30 @@ def make_loaders(cache, cfg, batch_size, num_workers, seed):
     if mc.get('use_proprio', False):
         pstats = proprio_stats(cache, mc['proprio_keys'], train_eps)
         mc['proprio_dim'] = int(len(pstats['mean']))
+    if mc.get('state_head', 'none') != 'none':
+        # auxiliary state readout from z: which columns of WindowDataset._state, standardized with
+        # training-set statistics. 'robot': effector position + gripper opening (what proprio gives);
+        # 'all': also the object features (cubes, drawer / window, buttons; privileged in training)
+        low = cache.low
+        cols = [0, 1, 2, 7]
+        n_obj = (low['obj_state'].shape[1] if 'obj_state' in low else low['obj_pos'].shape[1] if 'obj_pos' in low else 0)
+        if mc['state_head'] == 'all':
+            cols += list(range(8, 8 + n_obj))
+        elif mc['state_head'] != 'robot':
+            raise SystemExit(f"model.state_head must be none, robot or all, not {mc['state_head']!r}")
+        fr = np.concatenate([np.arange(cache.starts[e], cache.starts[e] + cache.lengths[e], 10) for e in train_eps])
+        obj = (low['obj_state'][fr] if 'obj_state' in low else low['obj_pos'][fr] / 0.05 if 'obj_pos' in low
+               else np.zeros((len(fr), 0)))
+        full = np.concatenate([low['x_ee'][fr, :3], np.zeros((len(fr), 4)), low['gripper'][fr, :1], obj], 1)[:, cols]
+        mc['state_cols'] = cols
+        mc['state_mean'] = full.mean(0).astype(float).tolist()
+        mc['state_std'] = np.maximum(full.std(0), 1e-3).astype(float).tolist()
     common = dict(horizon=dc['horizon'], frame_skip=dc['frame_skip'], action_mode=dc['action_mode'],
                   stats=stats, return_goal=bool(mc.get('use_gcb', False) or mc.get('use_successor', False)),
                   goal_geom_p=dc.get('goal_geom_p', 0.3), goal_max_offset=dc.get('goal_max_offset', 30),
                   goal_uniform_frac=dc.get('goal_uniform_frac', 0.0), goal_final_frac=dc.get('goal_final_frac', 0.0),
                   goal_uniform_max=dc.get('goal_uniform_max'),
+                  return_state=mc.get('state_head', 'none') != 'none',
                   tasks=tasks, proprio=pstats)
     train = WindowDataset(cache, 'train', start_stride=dc.get('start_stride', 1), seed=seed, **common)
     val = WindowDataset(cache, 'val', start_stride=dc.get('val_start_stride', 4), seed=seed + 1, **common)
@@ -164,6 +183,9 @@ def main():
                                                            int(tc.get('num_workers', 4)), args.seed)
     if pstats is not None:
         print(f'[proprio] {pstats["keys"]} -> {mc["proprio_dim"]}-d, fused with the CLS feature')
+    if mc.get('state_head', 'none') != 'none':
+        print(f'[state head] {mc["state_head"]}: {len(mc["state_cols"])} quantities read out from z, '
+              f'lambda_state={tc.get("lambda_state", 1.0)}')
     with open(os.path.join(args.save_dir, 'config.yaml'), 'w') as fh:  # now with proprio_dim
         yaml.safe_dump(cfg, fh, sort_keys=False)
     action_dim = len(stats['std']) * int(dc['frame_skip'])  # per-step action dim (7 Franka, 5 OGBench)

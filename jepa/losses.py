@@ -237,6 +237,20 @@ def compute_losses(model, batch, tc, device, with_diagnostics=False, sf_target=N
         total = total + lam * inv
         terms['epidm'] = inv
 
+    if model.state_head is not None and float(tc.get('lambda_state', 1.0)) > 0:
+        # z must carry the robot state (and objects) even without proprio: every window frame
+        # (proprio randomly dropped) and the goal (always encoded without proprio)
+        cols = list(model.cfg['state_cols'])
+        zs = [z.reshape(-1, z.shape[-1])]
+        ys = [batch['state'].to(device).reshape(-1, batch['state'].shape[-1])[:, cols]]
+        if (use_gcb or use_sf) and 'goal_state' in batch:
+            zs.append(z_goal)
+            ys.append(batch['goal_state'].to(device)[:, cols])
+        y = (torch.cat(ys) - model.state_mean) / model.state_std
+        l_state = F.mse_loss(model.state_head(torch.cat(zs)).float(), y)
+        total = total + float(tc.get('lambda_state', 1.0)) * l_state
+        terms['state'] = l_state
+
     if use_gcb:
         k = batch['goal_offset'].to(device)
         x_goal = model.encoder_input(batch['goal_obs'].to(device, non_blocking=True),

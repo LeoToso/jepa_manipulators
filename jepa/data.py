@@ -337,13 +337,15 @@ class WindowDataset(Dataset):
         proprio    float (H+1, P)        normalized proprio of every step (if proprio is given)
         task, episode  int
         goal_obs, goal_prev_obs, goal_offset, next_state, goal_state[, goal_proprio]   (if return_goal)
+        state      float (H+1, S)        measured state of every step (if return_state; see _state)
     """
 
     def __init__(self, cache, split, horizon=3, frame_skip=2, action_mode='delta_next',
                  stats=None, return_goal=False, goal_geom_p=0.3, goal_max_offset=30,
                  tasks=None, start_stride=1, seed=0, action_norm='scale', proprio=None,
-                 goal_uniform_frac=0.0, goal_final_frac=0.0, goal_uniform_max=None):
+                 goal_uniform_frac=0.0, goal_final_frac=0.0, goal_uniform_max=None, return_state=False):
         self.cache = cache
+        self.return_state = bool(return_state)   # measured state of every window frame (state head)
         # goal offset mixture: with goal_final_frac the episode's last frame, with goal_uniform_frac a
         # uniform offset up to the episode end, otherwise Geometric(goal_geom_p) capped at
         # goal_max_offset (the default: only near goals)
@@ -412,6 +414,8 @@ class WindowDataset(Dataset):
         }
         if self.proprio is not None:
             out['proprio'] = torch.from_numpy(self.proprio[frames])
+        if self.return_state:
+            out['state'] = torch.stack([self._state(f) for f in frames])
         if self.return_goal:
             k_avail = (ep_last - start) // self.fs
             u = self.rng.rand() if (self.goal_final_frac or self.goal_uniform_frac) else 1.0

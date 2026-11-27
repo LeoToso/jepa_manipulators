@@ -20,6 +20,7 @@
 # Paths (override with environment variables): OUT_ROOT (root of runs/, eval/, figures/; default
 # the repo), DATA_DIR (OGBench .npz files), CACHE_ROOT (caches),
 # RUNS (runs/ogb/<ENV>), EVAL (eval/ogb_<ENV>), FIG (figures/ogb_<ENV>), EPISODES (per task, 20),
+# EXTRA_SET="training.lambda_state=0.5 ..." for more config overrides,
 # PROP=1 for the proprio variant (configs/ogb/*_prop.yaml, runs and outputs suffixed _prop).
 set -euo pipefail
 ENVKEY=${1:?ENV}; STAGE=${2:?STAGE}; GPU=${3:-0}
@@ -33,6 +34,10 @@ CACHE_ROOT=${CACHE_ROOT:-/mnt/t7shield}
 TAG=${NAME//-/_}$([[ $DTYPE != play ]] && echo _$DTYPE || true)
 CACHE=$CACHE_ROOT/cache_ogb_$TAG
 SUF=$([[ ${PROP:-0} == 1 ]] && echo _prop || true)
+# STATE=robot | all: auxiliary readout of the state from z (effector + gripper; "all" adds the
+# objects, privileged in training only); runs and outputs suffixed _state<robot|all>
+STATE=${STATE:-none}
+[[ $STATE != none ]] && SUF=${SUF}_state$STATE
 OUT_ROOT=${OUT_ROOT:-.}       # e.g. /mnt/t7shield to keep runs, evaluations and figures off the home disk
 RUNS=${RUNS:-$OUT_ROOT/runs/ogb/$TAG$SUF}
 # the DP always sees proprio, so PROP=1 reuses the DP of the pixel runs
@@ -77,7 +82,8 @@ train_wm() {   # $1 = config name
   mkdir -p "$RUNS"
   python -m jepa.train --cache "$CACHE" --config configs/ogb/$1$SUF.yaml --save-dir "$RUNS/$1" \
     --set data.goal_max_offset=$GOAL_MAX data.goal_uniform_max=$GOAL_MAX training.sf_gamma=$GAMMA \
-          data.start_stride=$s data.val_start_stride=$((4 * s)) 2>&1 | tee "$RUNS/$1.log"
+          data.start_stride=$s data.val_start_stride=$((4 * s)) model.state_head=$STATE \
+          ${EXTRA_SET:-} 2>&1 | tee "$RUNS/$1.log"
 }
 
 mkdir -p "$RUNS" "$(dirname "$EVAL")" "$FIG"
