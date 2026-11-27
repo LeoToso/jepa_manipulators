@@ -231,7 +231,7 @@ def main():
         print(f'[resume] from epoch {ck["epoch"]}')
 
     use_amp = args.amp and device.type == 'cuda'
-    probe_every = int(tc.get('probe_every', 5))
+    probe_every = int(tc.get('probe_every', 1))  # ridge probes (R2 effector / gripper) every epoch
     for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
         model.train()

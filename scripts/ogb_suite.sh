@@ -34,8 +34,8 @@ CACHE_ROOT=${CACHE_ROOT:-/mnt/t7shield}
 TAG=${NAME//-/_}$([[ $DTYPE != play ]] && echo _$DTYPE || true)
 CACHE=$CACHE_ROOT/cache_ogb_$TAG
 SUF=$([[ ${PROP:-0} == 1 ]] && echo _prop || true)
-# STATE=robot | all: auxiliary readout of the state from z (effector + gripper; "all" adds the
-# objects, privileged in training only); runs and outputs suffixed _state<robot|all>
+# STATE=robot | all (off by default, not used for the results): an auxiliary supervised readout of
+# the measured state from z; runs and outputs suffixed _state<robot|all>
 STATE=${STATE:-none}
 [[ $STATE != none ]] && SUF=${SUF}_state$STATE
 OUT_ROOT=${OUT_ROOT:-.}       # e.g. /mnt/t7shield to keep runs, evaluations and figures off the home disk
